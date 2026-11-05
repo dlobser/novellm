@@ -90,7 +90,14 @@
 .kb-illus textarea { min-height: 60px; font-size: 0.8rem; }
 .kb-illus input[type="text"] { font-size: 0.8rem; padding: 6px 10px; }
 .kb-refs { display: flex; gap: 4px; align-items: center; }
-.kb-ref { width: 30px; height: 30px; border-radius: 4px; }
+.kb-ref { width: 30px; height: 30px; border-radius: 4px; flex: none; }
+.kb-sent { display: flex; flex-direction: column; gap: 5px; padding: 8px; border: 1px dashed var(--border); border-radius: var(--radius); font-size: 0.75rem; }
+.kb-sent-row { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.kb-sent-label { color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.06em; font-size: 0.66rem; }
+.kb-sent-ref { display: inline-flex; align-items: center; gap: 4px; padding: 2px 6px 2px 2px; border-radius: 6px; background: var(--bg-tertiary); }
+.kb-sent-warn { color: #d08a2e; }
+.kb-linkbtn { align-self: flex-start; background: none; border: none; padding: 0; color: var(--accent); cursor: pointer; font-size: 0.75rem; text-decoration: underline; }
+.kb-prompt { white-space: pre-wrap; max-height: 260px; overflow: auto; font-size: 0.7rem; margin: 0; }
 
 .kb-design { display: grid; grid-template-columns: minmax(330px, 400px) 1fr; gap: 16px; align-items: start; }
 .kb-design-controls { display: flex; flex-direction: column; gap: 10px; max-height: calc(100vh - 110px); overflow-y: auto; padding-right: 6px; position: sticky; top: 10px; }

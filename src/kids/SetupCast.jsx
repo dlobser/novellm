@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { AGE_RANGES, ART_STYLES, PAGE_COUNTS, PAPER, CAST_KINDS, newCastMember, storySlots } from './model.js';
-import { analyzeImagePrompt, castFromPremisePrompt, sheetPrompt } from './prompts.js';
+import { analyzeImagePrompt, castFromPremisePrompt, sheetPrompt, sheetRefs } from './prompts.js';
 import { Field, LazyText, Thumbs, UploadButton, DropZone, Spinner, Lightbox, Check } from './ui.jsx';
 
 export function PageCountPicker({ book, update }) {
@@ -169,11 +169,8 @@ export function CastPanel({ book, update, store, ai, run, busy, setTab, notify, 
   const genSheet = m => run(`sheet:${m.id}`, async () => {
     const fresh = book.cast.find(c => c.id === m.id) || m;
     if (!fresh.description && !fresh.refs.length) throw new Error(`Add a description or a reference image for ${fresh.name || 'this cast member'} first.`);
-    const refs = [
-      ...fresh.refs.map(id => ({ id, label: `${fresh.name || fresh.kind} — original reference` })),
-      ...(book.styleRefs || []).slice(0, 1).map(id => ({ id, label: 'art style reference' })),
-    ];
-    const id = await ai.image({ prompt: sheetPrompt(book, fresh, fresh.refs.length > 0), refs, aspect: fresh.kind === 'environment' ? '16:9' : '3:2' });
+    const refs = sheetRefs(book, fresh);
+    const id = await ai.image({ prompt: sheetPrompt(book, fresh, { hasRefs: fresh.refs.length > 0, hasStyleRef: refs.some(r => r.role === 'style') }), refs, aspect: fresh.kind === 'environment' ? '16:9' : '3:2' });
     updateMember(m.id, c => ({ ...c, sheets: [...c.sheets, id], activeSheet: id }));
   });
 

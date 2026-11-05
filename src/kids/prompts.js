@@ -134,94 +134,146 @@ Return ONLY valid JSON (no markdown fences): { "blurb": string, "tagline": strin
 }
 
 // ---- Image prompts ----
+// Every image prompt has the same shape: ART STYLE first (the thing models most often drift on),
+// then what each attached reference image is for, then the scene, then the style again as a reminder.
 
-export function sheetPrompt(book, member, hasRefs) {
-  const style = `Art style: ${book.artStyle}.`;
-  const match = hasRefs
-    ? 'Match the design in the attached reference image(s) exactly — same shapes, proportions, colors, clothing and markings — but render it cleanly in the art style above.'
-    : '';
-  const notes = member.sheetNotes ? `Extra notes: ${member.sheetNotes}` : '';
-  if (member.kind === 'environment') {
-    return `Environment concept sheet for a children's picture book: "${member.name}". ${member.description}
-Show one wide establishing view on top and two smaller alternate views below (a different angle and a closer detail). No characters. ${style} ${match} ${notes} ${NO_TEXT}`;
-  }
-  if (member.kind === 'prop') {
-    return `Prop design sheet for a children's picture book: "${member.name}". ${member.description}
-Show the object from the front, side, three-quarter and back, plus one close-up detail, evenly spaced on a plain white background. ${style} ${match} ${notes} ${NO_TEXT}`;
-  }
-  return `Character model sheet (turnaround) for a children's picture book: "${member.name}". ${member.description}
-Top row: full body front, three-quarter, side and back views at the same scale. Bottom row: four head close-ups showing happy, surprised, sad and determined expressions. Plain white background, even lighting, consistent proportions in every view. ${style} ${match} ${notes} ${NO_TEXT}`;
+const escRe = s => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+function styleBlock(book, refs = []) {
+  const hasStyleRef = refs.some(r => r.role === 'style');
+  return `ART STYLE — follow this exactly: ${book.artStyle || "warm, friendly children's picture-book illustration"}.`
+    + (hasStyleRef ? ' An "art style reference" image is attached: match its medium, line work, brush texture, color palette and lighting as closely as possible, but do NOT copy its subject, characters or composition.' : '');
 }
 
-// Which reference images to send with a page illustration.
+function refBlock(refs = []) {
+  const chars = refs.filter(r => r.role === 'character' || r.role === 'prop');
+  const envs = refs.filter(r => r.role === 'environment');
+  const lines = [];
+  if (chars.length) {
+    const many = chars.length > 1;
+    lines.push(`REFERENCE SHEETS — the attached sheets show exactly how ${chars.map(r => r.name).join(', ')} ${many ? 'look' : 'looks'}. Keep ${many ? 'each one' : 'it'} on-model: same face, head and body shape, proportions, colors, clothing, markings and accessories. Draw ${many ? 'them' : 'it'} fresh in a pose that fits this scene. Do NOT reproduce the sheet itself — no turnaround rows, no duplicate copies, no plain white sheet background.`);
+  }
+  if (envs.length) lines.push(`SETTING REFERENCE — keep ${envs.map(r => r.name).join(', ')} consistent with the attached environment sheet.`);
+  return lines.join('\n');
+}
+
+function sheetFor(m) {
+  return m.activeSheet || m.sheets[m.sheets.length - 1] || m.refs[0] || null;
+}
+
+function castRef(m) {
+  const id = sheetFor(m);
+  if (!id) return null;
+  const role = m.kind === 'environment' ? 'environment' : m.kind === 'prop' ? 'prop' : 'character';
+  return { id, role, name: m.name, label: `${m.name} — ${role} reference sheet` };
+}
+
+function styleRefList(book) {
+  return (book.styleRefs || []).slice(0, 1).map(id => ({ id, role: 'style', name: 'art style', label: 'art style reference (match the style, not the content)' }));
+}
+
+// Who is in a page's picture: the ticked cast, plus anyone named in the illustration notes
+// (and, if nobody is ticked, anyone named in the page text). Names match loosely ("Pip the dragon" → Pip).
+export function pageCast(book, page) {
+  const found = new Map();
+  (page.cast || []).forEach(n => { const m = findCast(book, n); if (m) found.set(m.id, m); });
+  const scan = [page.illustration, found.size ? '' : page.text].join(' ').toLowerCase();
+  book.cast.forEach(m => {
+    const name = (m.name || '').trim().toLowerCase();
+    if (name && new RegExp(`(^|[^a-z0-9])${escRe(name)}([^a-z0-9]|$)`).test(scan)) found.set(m.id, m);
+  });
+  return [...found.values()];
+}
+
+// Reference images to send with a page illustration, in the order the prompt describes them.
 export function pageRefs(book, page) {
-  const refs = [];
-  (page.cast || []).forEach(name => {
-    const m = findCast(book, name);
-    if (!m) return;
-    const id = m.activeSheet || m.sheets[m.sheets.length - 1] || m.refs[0];
-    if (id) refs.push({ id, label: `${m.name} (${CAST_KINDS[m.kind] || m.kind} reference sheet)` });
-  });
-  // Environment mentioned in the illustration text but not in cast list.
-  book.cast.filter(c => c.kind === 'environment').forEach(m => {
-    if (refs.some(r => r.label.startsWith(m.name))) return;
-    if (m.name && (page.illustration || '').toLowerCase().includes(m.name.toLowerCase())) {
-      const id = m.activeSheet || m.sheets[m.sheets.length - 1] || m.refs[0];
-      if (id) refs.push({ id, label: `${m.name} (environment reference)` });
-    }
-  });
-  (book.styleRefs || []).slice(0, 1).forEach(id => refs.push({ id, label: 'art style reference' }));
-  return refs.slice(0, 6);
+  const order = { character: 0, prop: 1, environment: 2 };
+  const refs = pageCast(book, page)
+    .sort((a, b) => (order[a.kind] ?? 3) - (order[b.kind] ?? 3))
+    .map(castRef)
+    .filter(Boolean);
+  return [...refs.slice(0, 5), ...styleRefList(book)];
 }
 
-export function pagePrompt(book, page, { pageNumber, extra = '' } = {}) {
+export function pagePrompt(book, page, { pageNumber, extra = '', refs = null } = {}) {
+  const r = refs || pageRefs(book, page);
   const layout = STORY_LAYOUTS[page.layout] || STORY_LAYOUTS['image-top'];
   let comp = '';
   if (page.layout === 'full-text-bottom') comp = 'Full-page portrait composition. Keep the bottom third simple and uncluttered (sky, ground, soft background) because a text box will sit there.';
   else if (page.layout === 'full-text-top') comp = 'Full-page portrait composition. Keep the top third simple and uncluttered because a text box will sit there.';
   else if (page.layout === 'image-only') comp = 'Full-page portrait composition, edge to edge.';
   else comp = `Square vignette composition (${layout.aspect}), subject centered with breathing room around the edges.`;
-  const cast = (page.cast || []).map(n => {
-    const m = findCast(book, n);
-    return m ? `${m.name}: ${m.description}` : n;
-  }).join('\n');
-  return `Illustration for ${pageNumber ? `page ${pageNumber} of ` : ''}the children's picture book "${book.title || 'Untitled'}" (ages ${book.ageRange}).
-Scene: ${page.illustration || page.text}
-${page.text ? `The words on this page read: "${page.text}"` : ''}
-${cast ? `Characters/props in the scene (keep them exactly on-model with the attached reference sheets):\n${cast}` : ''}
-${comp}
-Art style: ${book.artStyle}.
-${extra}
-${NO_TEXT}`.replace(/\n{2,}/g, '\n');
+  const cast = pageCast(book, page).map(m => `- ${m.name}: ${m.description}`).join('\n');
+  return [
+    styleBlock(book, r),
+    refBlock(r),
+    `SCENE — illustration for ${pageNumber ? `page ${pageNumber} of ` : ''}the children's picture book "${book.title || 'Untitled'}" (ages ${book.ageRange}): ${page.illustration || page.text}`,
+    page.text ? `The words printed on this page: "${page.text}"` : '',
+    cast ? `In the picture:\n${cast}` : '',
+    `COMPOSITION — ${comp}`,
+    extra ? `EXTRA DIRECTION — ${extra}` : '',
+    `Remember the art style: ${book.artStyle}. ${NO_TEXT}`,
+  ].filter(Boolean).join('\n');
 }
 
-export function coverPrompt(book, extra = '') {
-  const leads = book.cast.filter(c => c.kind === 'character').slice(0, 3);
-  const top = book.cover.layout === 'full-title-bottom' ? 'bottom' : 'top';
-  const full = book.cover.layout === 'full-title-top' || book.cover.layout === 'full-title-bottom';
-  return `Front cover illustration for the children's picture book "${book.title || 'Untitled'}" (ages ${book.ageRange}).
-${book.cover.prompt || `An inviting, iconic scene that captures the story: ${book.premise}`}
-${leads.length ? `Feature: ${leads.map(c => `${c.name} (${c.description})`).join('; ')}. Keep them exactly on-model with the attached reference sheets.` : ''}
-${full ? `Portrait composition. Leave the ${top} quarter fairly simple (sky or soft background) because the title will be placed there.` : 'Portrait composition with the main characters clearly framed.'}
-Art style: ${book.artStyle}. Bold, eye-catching, friendly.
-${extra}
-${NO_TEXT}`.replace(/\n{2,}/g, '\n');
+export function sheetPrompt(book, member, opts = {}) {
+  const { hasRefs = false, hasStyleRef = false } = typeof opts === 'boolean' ? { hasRefs: opts } : opts;
+  const style = styleBlock(book, hasStyleRef ? [{ role: 'style' }] : []);
+  const match = hasRefs
+    ? `DESIGN REFERENCE — the attached "original reference" image(s) show ${member.name || 'this design'}. Keep the design exactly (shapes, proportions, colors, clothing, markings) but redraw it in the ART STYLE above.`
+    : '';
+  const notes = member.sheetNotes ? `EXTRA NOTES — ${member.sheetNotes}` : '';
+  let body;
+  if (member.kind === 'environment') {
+    body = `Environment concept sheet for a children's picture book: "${member.name}". ${member.description}
+Show one wide establishing view on top and two smaller alternate views below (a different angle and a closer detail). No characters.`;
+  } else if (member.kind === 'prop') {
+    body = `Prop design sheet for a children's picture book: "${member.name}". ${member.description}
+Show the object from the front, side, three-quarter and back, plus one close-up detail, evenly spaced on a plain white background.`;
+  } else {
+    body = `Character model sheet (turnaround) for a children's picture book: "${member.name}". ${member.description}
+Top row: full body front, three-quarter, side and back views at the same scale. Bottom row: four head close-ups showing happy, surprised, sad and determined expressions. Plain white background, even lighting, consistent proportions in every view.`;
+  }
+  return [style, match, body, notes, `Remember the art style: ${book.artStyle}. ${NO_TEXT}`].filter(Boolean).join('\n');
+}
+
+// Reference images for a cast sheet: the member's own uploads, then the style reference.
+export function sheetRefs(book, member) {
+  return [
+    ...member.refs.map(id => ({ id, role: 'design', name: member.name, label: `${member.name || member.kind} — original reference` })),
+    ...styleRefList(book),
+  ];
 }
 
 export function coverRefs(book) {
-  const refs = [];
-  book.cast.filter(c => c.kind === 'character').slice(0, 3).forEach(m => {
-    const id = m.activeSheet || m.sheets[m.sheets.length - 1] || m.refs[0];
-    if (id) refs.push({ id, label: `${m.name} (character reference sheet)` });
-  });
-  (book.styleRefs || []).slice(0, 1).forEach(id => refs.push({ id, label: 'art style reference' }));
-  return refs;
+  const leads = book.cast.filter(c => c.kind === 'character').slice(0, 3).map(castRef).filter(Boolean);
+  return [...leads, ...styleRefList(book)];
 }
 
-export function matterImagePrompt(book, matter) {
-  if (matter.type === 'the-end') return `A small, heartwarming closing vignette for the end of the children's book "${book.title}": ${book.premise}. Art style: ${book.artStyle}. ${NO_TEXT}`;
-  if (matter.type === 'title') return `A small spot illustration for the title page of the children's book "${book.title}", featuring the main character in a simple pose, white background. Art style: ${book.artStyle}. ${NO_TEXT}`;
-  return `${matter.text || matter.title || 'Decorative illustration'} — for the children's book "${book.title}". Art style: ${book.artStyle}. ${NO_TEXT}`;
+export function coverPrompt(book, extra = '', refs = null) {
+  const r = refs || coverRefs(book);
+  const leads = book.cast.filter(c => c.kind === 'character').slice(0, 3);
+  const top = book.cover.layout === 'full-title-bottom' ? 'bottom' : 'top';
+  const full = book.cover.layout === 'full-title-top' || book.cover.layout === 'full-title-bottom';
+  return [
+    styleBlock(book, r),
+    refBlock(r),
+    `SCENE — front cover illustration for the children's picture book "${book.title || 'Untitled'}" (ages ${book.ageRange}): ${book.cover.prompt || `an inviting, iconic scene that captures the story: ${book.premise}`}`,
+    leads.length ? `Featuring:\n${leads.map(c => `- ${c.name}: ${c.description}`).join('\n')}` : '',
+    `COMPOSITION — ${full ? `Portrait. Leave the ${top} quarter fairly simple (sky or soft background) because the title will be placed there.` : 'Portrait, with the main characters clearly framed.'} Bold, eye-catching, friendly.`,
+    extra ? `EXTRA DIRECTION — ${extra}` : '',
+    `Remember the art style: ${book.artStyle}. ${NO_TEXT}`,
+  ].filter(Boolean).join('\n');
+}
+
+export function matterImagePrompt(book, matter, refs = null) {
+  const r = refs || coverRefs(book);
+  const scene = matter.type === 'the-end'
+    ? `a small, heartwarming closing vignette for the end of the children's book "${book.title}": ${book.premise}`
+    : matter.type === 'title'
+      ? `a small spot illustration for the title page of the children's book "${book.title}", featuring the main character in a simple pose on a white background`
+      : `${matter.text || matter.title || 'a decorative illustration'} — for the children's book "${book.title}"`;
+  return [styleBlock(book, r), refBlock(r), `SCENE — ${scene}`, `Remember the art style: ${book.artStyle}. ${NO_TEXT}`].filter(Boolean).join('\n');
 }
 
 // Guidance block returned to MCP clients so they write in the right shape.

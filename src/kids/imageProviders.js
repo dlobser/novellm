@@ -52,11 +52,14 @@ async function readError(res) {
 async function geminiImage(cfg, { prompt, refs, aspect }) {
   cfg = { ...cfg, key: cleanKey(cfg.key), model: String(cfg.model || '').trim() };
   if (!cfg.key) throw new Error('Add a Gemini API key in Kids Book → Settings (or GEMINI_API_KEY for the MCP server).');
-  const parts = [{ text: prompt }];
-  refs.filter(r => /image\/(png|jpe?g|webp|heic|heif)/.test(r.mimeType)).forEach(r => {
-    if (r.label) parts.push({ text: `Reference image: ${r.label}` });
+  const usable = refs.filter(r => /image\/(png|jpe?g|webp|heic|heif)/.test(r.mimeType));
+  const parts = [];
+  if (usable.length) parts.push({ text: `${usable.length} reference image${usable.length > 1 ? 's follow' : ' follows'}, each labeled. Use them as the instructions after them describe.` });
+  usable.forEach((r, i) => {
+    parts.push({ text: `Reference ${i + 1}: ${r.label || 'reference image'}` });
     parts.push({ inlineData: { mimeType: r.mimeType, data: r.data } });
   });
+  parts.push({ text: usable.length ? `Now create ONE new illustration.\n${prompt}` : prompt });
   const body = {
     contents: [{ role: 'user', parts }],
     generationConfig: { responseModalities: ['TEXT', 'IMAGE'], imageConfig: aspect ? { aspectRatio: aspect } : undefined },
@@ -95,18 +98,29 @@ async function openaiImage(cfg, { prompt, refs, aspect }) {
   let res;
   const usable = refs.filter(r => /image\/(png|jpe?g|webp)/.test(r.mimeType));
   if (usable.length) {
-    const fd = new FormData();
-    fd.append('model', model);
     const labels = usable.map((r, i) => `Image ${i + 1}: ${r.label || 'reference'}`).join('\n');
-    fd.append('prompt', `${prompt}\n\nAttached reference images:\n${labels}`);
-    fd.append('size', size);
-    if (cfg.quality) fd.append('quality', cfg.quality);
-    fd.append('n', '1');
-    usable.forEach((r, i) => {
-      const ext = r.mimeType.split('/')[1].replace('jpeg', 'jpg');
-      fd.append('image[]', new Blob([b64ToBytes(r.data)], { type: r.mimeType }), `ref${i + 1}.${ext}`);
-    });
-    res = await apiFetch('OpenAI', 'https://api.openai.com/v1/images/edits', { method: 'POST', headers: { Authorization: `Bearer ${cfg.key}` }, body: fd });
+    const makeForm = fidelity => {
+      const fd = new FormData();
+      fd.append('model', model);
+      fd.append('prompt', `Attached reference images:\n${labels}\n\nCreate ONE new illustration (do not just edit image 1).\n${prompt}`);
+      fd.append('size', size);
+      if (cfg.quality) fd.append('quality', cfg.quality);
+      if (fidelity) fd.append('input_fidelity', 'high');
+      fd.append('n', '1');
+      usable.forEach((r, i) => {
+        const ext = r.mimeType.split('/')[1].replace('jpeg', 'jpg');
+        fd.append('image[]', new Blob([b64ToBytes(r.data)], { type: r.mimeType }), `ref${i + 1}.${ext}`);
+      });
+      return fd;
+    };
+    const send = fidelity => apiFetch('OpenAI', 'https://api.openai.com/v1/images/edits', { method: 'POST', headers: { Authorization: `Bearer ${cfg.key}` }, body: makeForm(fidelity) });
+    const wantFidelity = /^gpt-image-1(\.|$)/.test(model);
+    res = await send(wantFidelity);
+    // Older/other models may not know input_fidelity — retry once without it.
+    if (wantFidelity && res.status === 400) {
+      const t = await res.clone().text();
+      if (/input_fidelity/i.test(t)) res = await send(false);
+    }
   } else {
     res = await apiFetch('OpenAI', 'https://api.openai.com/v1/images/generations', {
       method: 'POST',

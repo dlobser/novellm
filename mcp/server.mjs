@@ -21,7 +21,7 @@ import {
   PAGE_COUNTS, AGE_RANGES, STORY_LAYOUTS, COVER_LAYOUTS, BACK_COVER_LAYOUTS, MATTER_TYPES, CAST_KINDS, PAPER,
   newCastMember, newMatter, newPage, applyStory, storyPages, computePlan, imposition, findCast, bookSummary, normalizeBook, safeName,
 } from '../src/kids/model.js';
-import { writingGuide, sheetPrompt, pagePrompt, pageRefs, coverPrompt, coverRefs, matterImagePrompt } from '../src/kids/prompts.js';
+import { writingGuide, sheetPrompt, sheetRefs, pagePrompt, pageRefs, coverPrompt, coverRefs, matterImagePrompt } from '../src/kids/prompts.js';
 import { generateImage, IMAGE_PROVIDERS } from '../src/kids/imageProviders.js';
 import { renderBookHTML, printInstructions } from '../src/kids/layout.js';
 import { KID_FONTS } from '../src/kids/fonts.js';
@@ -379,8 +379,8 @@ function buildServer(transportName) {
     const m = findCast(b, name);
     if (!m) throw new Error(`No cast member named ${name}.`);
     const member = extraNotes ? { ...m, sheetNotes: [m.sheetNotes, extraNotes].filter(Boolean).join(' ') } : m;
-    const refs = [...m.refs.map(id => ({ id, label: `${m.name} — original reference` })), ...b.styleRefs.slice(0, 1).map(id => ({ id, label: 'art style reference' }))];
-    const g = await generateFor(b, { prompt: sheetPrompt(b, member, m.refs.length > 0), refs, aspect: m.kind === 'environment' ? '16:9' : '3:2' });
+    const refs = sheetRefs(b, m);
+    const g = await generateFor(b, { prompt: sheetPrompt(b, member, { hasRefs: m.refs.length > 0, hasStyleRef: refs.some(r => r.role === 'style') }), refs, aspect: m.kind === 'environment' ? '16:9' : '3:2' });
     await mutate(b.id, writer, bk => ({ ...bk, cast: bk.cast.map(c => (c.id === m.id ? { ...c, sheets: [...c.sheets, g.id], activeSheet: g.id } : c)) }));
     const content = [{ type: 'text', text: `Sheet for ${m.name} saved as ${g.id} (via ${g.provider}). It's now the reference used for page illustrations.` }];
     if (preview) content.push(await thumb(g.buffer, g.mime, 640));

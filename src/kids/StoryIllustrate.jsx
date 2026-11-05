@@ -2,7 +2,7 @@ import React, { useRef, useState } from 'react';
 import { STORY_LAYOUTS, newPage, newChapter, applyStory, storyPages } from './model.js';
 import {
   storySystemPrompt, storyPrompt, chapterPlanPrompt, chapterPagesPrompt, revisePagePrompt, reviseStoryPrompt,
-  pagePrompt, pageRefs, coverPrompt, coverRefs,
+  pagePrompt, pageRefs, pageCast, coverPrompt, coverRefs,
 } from './prompts.js';
 import { Field, LazyText, Thumbs, UploadButton, Spinner, Lightbox, Img } from './ui.jsx';
 import { PageCountPicker } from './SetupCast.jsx';
@@ -210,6 +210,43 @@ export function StoryPanel({ book, update, ai, run, busy, setTab, plan, bookRef 
 
 // ---------------------------------------------------------------------------
 
+// Shows exactly what goes to the image generator for one page: who's in it, which reference
+// images are attached, and the full prompt text.
+function SentWith({ book, page, refs, store, useRefs, n, extra, onToggleCast }) {
+  const [showPrompt, setShowPrompt] = useState(false);
+  const inPic = pageCast(book, page);
+  const charRefs = refs.filter(r => r.role !== 'style');
+  const styleRef = refs.find(r => r.role === 'style');
+  const missingSheets = inPic.filter(m => !refs.some(r => r.name === m.name) && m.kind !== 'environment');
+  return (
+    <div className="kb-sent">
+      <div className="kb-sent-row">
+        <span className="kb-sent-label">Sent with it:</span>
+        {refs.map(r => (
+          <span key={r.id + r.role} className="kb-sent-ref" title={r.label}>
+            <Img store={store} id={r.id} className="kb-ref" title={r.label} />
+            <span>{r.role === 'style' ? 'style' : r.name}</span>
+          </span>
+        ))}
+        {!refs.length && <span className="text-muted">{useRefs ? 'no reference images' : 'references turned off'}</span>}
+      </div>
+      {useRefs && !charRefs.length && book.cast.length > 0 && <div className="kb-sent-warn">No character sheet attached. Tick who’s in this picture:</div>}
+      {missingSheets.length > 0 && <div className="kb-sent-warn">{missingSheets.map(m => m.name).join(', ')} {missingSheets.length > 1 ? 'have' : 'has'} no sheet or reference image yet.</div>}
+      {useRefs && !styleRef && <div className="text-muted" style={{ fontSize: '0.72rem' }}>No style image (add one on the Book tab) — the written style is used.</div>}
+      {book.cast.length > 0 && (
+        <div className="kb-chips">
+          {book.cast.map(c => {
+            const on = inPic.some(m => m.id === c.id);
+            return <button key={c.id} className={`kb-chip ${on ? 'on' : ''}`} onClick={() => onToggleCast(c.name)} title={on ? 'In this picture' : 'Not in this picture'}>{c.name || '(unnamed)'}</button>;
+          })}
+        </div>
+      )}
+      <button className="kb-linkbtn" onClick={() => setShowPrompt(s => !s)}>{showPrompt ? 'Hide prompt' : 'See prompt'}</button>
+      {showPrompt && <pre className="kb-pre kb-prompt">{pagePrompt(book, page, { pageNumber: n, extra, refs })}</pre>}
+    </div>
+  );
+}
+
 export function IllustratePanel({ book, update, store, ai, run, busy, setTab, settings, bookRef, plan }) {
   const [lightbox, setLightbox] = useState(null);
   const [extra, setExtra] = useState({});
@@ -221,9 +258,10 @@ export function IllustratePanel({ book, update, store, ai, run, busy, setTab, se
     const b = bookRef.current;
     const page = storyPages(b).find(s => s.page.id === pageId)?.page;
     if (!page) return;
+    const refs = useRefs ? pageRefs(b, page) : [];
     const id = await ai.image({
-      prompt: pagePrompt(b, page, { pageNumber: n, extra: extra[pageId] || '' }),
-      refs: useRefs ? pageRefs(b, page) : [],
+      prompt: pagePrompt(b, page, { pageNumber: n, extra: extra[pageId] || '', refs }),
+      refs,
       aspect: STORY_LAYOUTS[page.layout]?.aspect || '1:1',
     });
     update(bk => mapPage(bk, pageId, p => ({ ...p, imageId: id, altImages: [...(p.altImages || []), id] })));
@@ -231,7 +269,8 @@ export function IllustratePanel({ book, update, store, ai, run, busy, setTab, se
 
   const genCover = () => run('img:cover', async () => {
     const b = bookRef.current;
-    const id = await ai.image({ prompt: coverPrompt(b, extra.cover || ''), refs: useRefs ? coverRefs(b) : [], aspect: b.cover.layout === 'framed' ? '1:1' : b.cover.layout === 'classic' ? '4:3' : '2:3' });
+    const refs = useRefs ? coverRefs(b) : [];
+    const id = await ai.image({ prompt: coverPrompt(b, extra.cover || '', refs), refs, aspect: b.cover.layout === 'framed' ? '1:1' : b.cover.layout === 'classic' ? '4:3' : '2:3' });
     update(bk => ({ ...bk, cover: { ...bk.cover, imageId: id, altImages: [...(bk.cover.altImages || []), id] } }));
   });
 
@@ -276,6 +315,10 @@ export function IllustratePanel({ book, update, store, ai, run, busy, setTab, se
       {!book.cast.some(c => c.sheets.length) && book.cast.length > 0 && (
         <div className="kb-warn">Tip: generate cast sheets first (Cast &amp; Sheets tab) so characters stay consistent from page to page.</div>
       )}
+      {!useRefs && <div className="kb-warn">Reference images are turned off, so cast sheets and the style image are not sent. Turn on “Use sheets as references” on the Cast &amp; Sheets tab.</div>}
+      {ai.imageProvider === 'comfy' && !/\{\{image\d+\}\}/.test(settings.image.comfy.workflow || '') && (
+        <div className="kb-warn">ComfyUI’s built-in workflow is text-only: it can’t see your character sheets or style image (your written style is still used). For consistent characters, paste a workflow that uses <code>{'{{image1}}'}</code>, <code>{'{{image2}}'}</code>… in Settings, or use Gemini/OpenAI.</div>
+      )}
 
       <div className="kb-illus-grid">
         <div className="kb-card kb-illus cover">
@@ -314,12 +357,11 @@ export function IllustratePanel({ book, update, store, ai, run, busy, setTab, se
               <Img store={store} id={pg.imageId} className={`kb-illus-img ${portrait ? 'portrait' : 'square'}`} onClick={() => pg.imageId && setLightbox(pg.imageId)} />
               <div className="kb-illus-text">{pg.text || <em className="text-muted">no words</em>}</div>
               <LazyText multiline rows={3} value={pg.illustration} onCommit={v => update(b => mapPage(b, pg.id, x => ({ ...x, illustration: v })))} placeholder="Describe the picture…" />
-              {refs.length > 0 && (
-                <div className="kb-refs" title="Reference images sent with this prompt">
-                  {refs.map(r => <Img key={r.id + r.label} store={store} id={r.id} className="kb-ref" title={r.label} />)}
-                  <span className="text-muted">refs</span>
-                </div>
-              )}
+              <SentWith book={book} page={pg} refs={refs} store={store} useRefs={useRefs} n={p.n} extra={extra[pg.id] || ''}
+                onToggleCast={name => update(b => mapPage(b, pg.id, x => {
+                  const on = (x.cast || []).some(c => c.toLowerCase() === name.toLowerCase());
+                  return { ...x, cast: on ? x.cast.filter(c => c.toLowerCase() !== name.toLowerCase()) : [...(x.cast || []), name] };
+                }))} />
               <Thumbs store={store} ids={pg.altImages} activeId={pg.imageId} size={44}
                 onPick={id => update(b => mapPage(b, pg.id, x => ({ ...x, imageId: id })))}
                 onRemove={id => update(b => mapPage(b, pg.id, x => ({ ...x, altImages: x.altImages.filter(y => y !== id), imageId: x.imageId === id ? null : x.imageId })))} />

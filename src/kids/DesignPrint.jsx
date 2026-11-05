@@ -159,7 +159,8 @@ function MatterList({ which, book, update, store, ai, run, busy }) {
   });
   const remove = id => update(b => ({ ...b, [which]: b[which].filter(m => m.id !== id) }));
   const gen = m => run(`matter:${m.id}`, async () => {
-    const id = await ai.image({ prompt: matterImagePrompt(book, m), refs: coverRefs(book), aspect: m.type === 'image' ? '2:3' : '1:1' });
+    const refs = coverRefs(book);
+    const id = await ai.image({ prompt: matterImagePrompt(book, m, refs), refs, aspect: m.type === 'image' ? '2:3' : '1:1' });
     set(m.id, { imageId: id });
   });
   const hasText = t => ['copyright', 'dedication', 'about-author', 'about-illustrator', 'note', 'the-end'].includes(t);

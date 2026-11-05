@@ -232,10 +232,19 @@ export default function KidsBookStudio({ mainKeys }) {
       image: async ({ prompt, refs = [], aspect = '1:1' }) => {
         const refImgs = [];
         const missing = [];
+        const svgs = [];
         for (const r of refs) {
-          try { refImgs.push({ ...(await store.base64(r.id)), label: r.label }); } catch (e) { missing.push(r.label); }
+          try {
+            const img = await store.base64(r.id);
+            refImgs.push({ ...img, label: r.label });
+            if (img.mimeType === 'image/svg+xml') svgs.push(r.name || r.label);
+          } catch (e) { missing.push(r.label); }
         }
         if (missing.length) notify(`Couldn't load reference image(s): ${missing.join(', ')} — generating without them.`, 'error');
+        // Placeholder sheets are SVG, which Gemini/OpenAI can't read — say so instead of silently dropping them.
+        if (svgs.length && (settings.image.provider === 'gemini' || settings.image.provider === 'openai')) {
+          notify(`${svgs.join(', ')} ${svgs.length > 1 ? 'are placeholder images' : 'is a placeholder image'}, which ${settings.image.provider === 'gemini' ? 'Gemini' : 'OpenAI'} can't use as a reference. Regenerate ${svgs.length > 1 ? 'those sheets' : 'that sheet'} with a real image generator (Cast & Sheets → ↻ Redo all sheets).`, 'error');
+        }
         const out = await generateImage(imageSettings, { prompt, refs: refImgs, aspect });
         return store.putImage(b64ToBlob(out));
       },
