@@ -73,9 +73,13 @@ export default function FullBookTab({ project, setProject, outline, chapters, ca
           return `Chapter ${i + 1}: ${ch.title} [NOT WRITTEN]`;
         }).join('\n\n');
 
+        let editorIntro = `You are "${editor.name}", an editorial reviewer. ${editor.systemPrompt}`;
+        if (editor.includeProjectKnowledge) {
+          editorIntro += `\n\nProject characters: ${(project.characters || []).join('; ')}\nWorld details: ${(project.settings || []).join('; ')}`;
+        }
         const result = await callAsEditor(editor, [{
           role: 'user',
-          content: `You are "${editor.name}", an editorial reviewer. ${editor.systemPrompt}\n\nYou are reviewing the complete novel "${project.title}" with the following structure:\n\nSynopsis: ${project.synopsis}\n\n${chapterSummaries}\n\nProvide a comprehensive editorial review of the entire book. Comment on:\n- Overall narrative arc and pacing\n- Character development across chapters\n- Thematic consistency\n- Which specific chapters need the most revision and why\n- Suggestions for structural changes\n\nBe specific about which chapters need work and what kind of editing they need.`
+          content: `${editorIntro}\n\nYou are reviewing the complete novel "${project.title}" with the following structure:\n\nSynopsis: ${project.synopsis}\n\n${chapterSummaries}\n\nProvide a comprehensive editorial review of the entire book. Comment on:\n- Overall narrative arc and pacing\n- Character development across chapters\n- Thematic consistency\n- Which specific chapters need the most revision and why\n- Suggestions for structural changes\n\nBe specific about which chapters need work and what kind of editing they need.`
         }]);
         newFeedback.push({ editorName: editor.name, text: result });
       }

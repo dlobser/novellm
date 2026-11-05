@@ -72,9 +72,8 @@ export function buildOutlineContext(outline) {
   return ctx;
 }
 
-export function buildChapterContext(outline, chapters, currentIdx) {
-  // Include outline descriptions + factual summaries of written chapters
-  // Chapters can be written in any order, so every written chapter gets its summary
+// compact: if true, skip adjacent full chapter text (for smaller context windows)
+export function buildChapterContext(outline, chapters, currentIdx, compact = false) {
   let ctx = 'STORY CONTEXT BY CHAPTER:\n\n';
   for (let i = 0; i < outline.length; i++) {
     if (i === currentIdx) {
@@ -82,13 +81,13 @@ export function buildChapterContext(outline, chapters, currentIdx) {
       ctx += `Outline: ${outline[i].description}\n\n`;
     } else if (chapters[i]) {
       ctx += `Chapter ${i + 1}: ${outline[i].title} [WRITTEN]\n`;
-      // Always include the factual summary if available
       if (chapters[i].summary) {
         ctx += `Facts & Events: ${chapters[i].summary}\n`;
       }
       ctx += `Outline: ${outline[i].description}\n`;
       // For adjacent chapters (prev and next), include full text for seamless continuity
-      if (i === currentIdx - 1 || i === currentIdx + 1) {
+      // unless compact mode (small context window providers)
+      if (!compact && (i === currentIdx - 1 || i === currentIdx + 1)) {
         ctx += `Full text:\n${chapters[i].text}\n`;
       }
       ctx += '\n';

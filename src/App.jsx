@@ -4,6 +4,57 @@ import OutlineTab from './tabs/OutlineTab.jsx';
 import ChaptersTab from './tabs/ChaptersTab.jsx';
 import FullBookTab from './tabs/FullBookTab.jsx';
 import PublishTab from './tabs/PublishTab.jsx';
+import CollapsibleSection from './components/CollapsibleSection.jsx';
+
+// ── Provider Registry ──────────────────────────────────────────────
+// type: 'anthropic' uses Anthropic's native API format
+// type: 'openai-compat' uses the OpenAI chat/completions format
+export const PROVIDER_CATALOG = {
+  anthropic: {
+    name: 'Anthropic',
+    type: 'anthropic',
+    baseUrl: 'https://api.anthropic.com/v1/messages',
+    placeholder: 'sk-ant-...',
+    maxTokens: 16384,
+    contextWindow: 200000,
+    models: [
+      { id: 'claude-sonnet-4-20250514', label: 'Claude Sonnet 4' },
+      { id: 'claude-opus-4-20250514', label: 'Claude Opus 4' },
+      { id: 'claude-haiku-4-5-20251001', label: 'Claude Haiku 4.5' },
+    ],
+  },
+  openai: {
+    name: 'OpenAI',
+    type: 'openai-compat',
+    baseUrl: 'https://api.openai.com/v1/chat/completions',
+    placeholder: 'sk-...',
+    maxTokens: 8192,
+    contextWindow: 128000,
+    models: [
+      { id: 'gpt-4o', label: 'GPT-4o' },
+      { id: 'gpt-4o-mini', label: 'GPT-4o Mini' },
+      { id: 'gpt-4.1', label: 'GPT-4.1' },
+      { id: 'gpt-4.1-mini', label: 'GPT-4.1 Mini' },
+      { id: 'o3', label: 'o3' },
+      { id: 'o4-mini', label: 'o4-mini' },
+    ],
+  },
+  venice: {
+    name: 'Venice',
+    type: 'openai-compat',
+    baseUrl: 'https://api.venice.ai/api/v1/chat/completions',
+    placeholder: 'venice-...',
+    maxTokens: 8192,
+    contextWindow: 32000,
+    models: [
+      { id: 'zai-org-glm-4.7', label: 'GLM 4.7 (Flagship)' },
+      { id: 'qwen3-235b-a22b', label: 'Qwen3 235B' },
+      { id: 'llama-3.3-70b', label: 'Llama 3.3 70B' },
+      { id: 'qwen3-4b', label: 'Qwen3 4B (Fast)' },
+      { id: 'venice-uncensored', label: 'Venice Uncensored' },
+    ],
+  },
+};
 
 const DEFAULT_PROJECT = {
   title: '',
@@ -34,7 +85,6 @@ function loadProject() {
     const raw = localStorage.getItem('novel_project');
     if (raw) {
       const p = JSON.parse(raw);
-      // Migrate old single chapterWordCount to min/max
       if (p.chapterWordCount && !p.chapterWordCountMin) {
         p.chapterWordCountMin = p.chapterWordCount;
         p.chapterWordCountMax = p.chapterWordCount;
@@ -62,25 +112,47 @@ function loadChapters() {
   return {};
 }
 
+// Migrate old per-key storage to new providers map
+function loadProviderKeys() {
+  try {
+    const raw = localStorage.getItem('novel_provider_keys');
+    if (raw) return JSON.parse(raw);
+  } catch (e) {}
+  // Migrate from old format
+  const keys = {};
+  const oldAnthropicKey = localStorage.getItem('novel_api_key');
+  const oldOpenaiKey = localStorage.getItem('novel_openai_key');
+  if (oldAnthropicKey) keys.anthropic = oldAnthropicKey;
+  if (oldOpenaiKey) keys.openai = oldOpenaiKey;
+  return keys;
+}
+
 export default function App() {
   const [tab, setTab] = useState(0);
-  const [apiProvider, setApiProvider] = useState(() => localStorage.getItem('novel_api_provider') || 'anthropic');
-  const [apiKey, setApiKey] = useState(() => localStorage.getItem('novel_api_key') || '');
-  const [openaiKey, setOpenaiKey] = useState(() => localStorage.getItem('novel_openai_key') || '');
-  const [apiModel, setApiModel] = useState(() => localStorage.getItem('novel_api_model') || 'claude-sonnet-4-20250514');
+  const [activeProvider, setActiveProvider] = useState(() => localStorage.getItem('novel_api_provider') || 'anthropic');
+  const [activeModel, setActiveModel] = useState(() => localStorage.getItem('novel_api_model') || 'claude-sonnet-4-20250514');
+  const [providerKeys, setProviderKeys] = useState(() => loadProviderKeys());
   const [project, setProject] = useState(() => loadProject() || { ...DEFAULT_PROJECT });
   const [outline, setOutline] = useState(() => loadOutline());
   const [chapters, setChapters] = useState(() => loadChapters());
   const [loading, setLoading] = useState({});
+  const [theme, setTheme] = useState(() => localStorage.getItem('novel_theme') || 'dark');
+
+  const cancelRef = useRef(false);
+
+  // Apply theme
+  useEffect(() => {
+    document.documentElement.setAttribute('data-theme', theme);
+    localStorage.setItem('novel_theme', theme);
+  }, [theme]);
 
   // Persist
   useEffect(() => { localStorage.setItem('novel_project', JSON.stringify(project)); }, [project]);
   useEffect(() => { localStorage.setItem('novel_outline', JSON.stringify(outline)); }, [outline]);
   useEffect(() => { localStorage.setItem('novel_chapters', JSON.stringify(chapters)); }, [chapters]);
-  useEffect(() => { localStorage.setItem('novel_api_key', apiKey); }, [apiKey]);
-  useEffect(() => { localStorage.setItem('novel_openai_key', openaiKey); }, [openaiKey]);
-  useEffect(() => { localStorage.setItem('novel_api_model', apiModel); }, [apiModel]);
-  useEffect(() => { localStorage.setItem('novel_api_provider', apiProvider); }, [apiProvider]);
+  useEffect(() => { localStorage.setItem('novel_provider_keys', JSON.stringify(providerKeys)); }, [providerKeys]);
+  useEffect(() => { localStorage.setItem('novel_api_model', activeModel); }, [activeModel]);
+  useEffect(() => { localStorage.setItem('novel_api_provider', activeProvider); }, [activeProvider]);
 
   // Save/Load JSON
   const exportProject = useCallback(() => {
@@ -117,7 +189,6 @@ export default function App() {
     input.click();
   }, []);
 
-  // Clear everything and start fresh
   const clearProject = useCallback(() => {
     if (!confirm('Clear everything? This will erase all project data, outline, and chapters. (API keys are kept.) Make sure you\'ve exported your project first!')) return;
     setProject({ ...DEFAULT_PROJECT });
@@ -127,130 +198,212 @@ export default function App() {
     setLoading({});
   }, []);
 
-  // Low-level API call with explicit provider/model/key
-  const callAPI = useCallback(async (messages, systemPrompt = '', overrides = {}) => {
-    const prov = overrides.provider || apiProvider;
-    const mod = overrides.model || apiModel;
-    const aKey = overrides.provider === 'anthropic' ? apiKey : overrides.provider === 'openai' ? openaiKey : (prov === 'anthropic' ? apiKey : openaiKey);
+  // ── Unified API call ──────────────────────────────────────────────
+  const callAPIStreaming = useCallback(async (messages, systemPrompt = '', overrides = {}, onChunk = null) => {
+    const provId = overrides.provider || activeProvider;
+    const modelId = overrides.model || activeModel;
+    const catalog = PROVIDER_CATALOG[provId];
+    if (!catalog) throw new Error(`Unknown provider: ${provId}`);
 
-    if (prov === 'openai') {
-      if (!aKey && !openaiKey) { alert('Please enter your OpenAI API key'); return null; }
+    const key = providerKeys[provId];
+    if (!key) { alert(`Please enter your ${catalog.name} API key`); return null; }
+
+    if (catalog.type === 'openai-compat') {
       const oaiMessages = [];
       if (systemPrompt) oaiMessages.push({ role: 'system', content: systemPrompt });
       oaiMessages.push(...messages);
 
-      const res = await fetch('https://api.openai.com/v1/chat/completions', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${aKey || openaiKey}` },
-        body: JSON.stringify({ model: mod, max_tokens: 8192, messages: oaiMessages }),
-      });
-      if (!res.ok) { const err = await res.text(); throw new Error(`OpenAI API Error ${res.status}: ${err}`); }
-      const data = await res.json();
-      return data.choices[0]?.message?.content || '';
+      if (onChunk) {
+        const res = await fetch(catalog.baseUrl, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${key}` },
+          body: JSON.stringify({ model: modelId, max_tokens: catalog.maxTokens || 8192, messages: oaiMessages, stream: true }),
+        });
+        if (!res.ok) { const err = await res.text(); throw new Error(`${catalog.name} API Error ${res.status}: ${err}`); }
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let full = '';
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          const chunk = decoder.decode(value, { stream: true });
+          const lines = chunk.split('\n').filter(l => l.startsWith('data: '));
+          for (const line of lines) {
+            const data = line.slice(6);
+            if (data === '[DONE]') break;
+            try {
+              const parsed = JSON.parse(data);
+              const delta = parsed.choices?.[0]?.delta?.content || '';
+              if (delta) { full += delta; onChunk(full); }
+            } catch (e) {}
+          }
+        }
+        return full;
+      } else {
+        const res = await fetch(catalog.baseUrl, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${key}` },
+          body: JSON.stringify({ model: modelId, max_tokens: catalog.maxTokens || 8192, messages: oaiMessages }),
+        });
+        if (!res.ok) { const err = await res.text(); throw new Error(`${catalog.name} API Error ${res.status}: ${err}`); }
+        const data = await res.json();
+        return data.choices[0]?.message?.content || '';
+      }
     } else {
-      if (!aKey && !apiKey) { alert('Please enter your Anthropic API key'); return null; }
-      const body = { model: mod, max_tokens: 8192, messages };
+      // Anthropic native
+      const body = { model: modelId, max_tokens: catalog.maxTokens || 8192, messages };
       if (systemPrompt) body.system = systemPrompt;
 
-      const res = await fetch('https://api.anthropic.com/v1/messages', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'x-api-key': aKey || apiKey,
-          'anthropic-version': '2023-06-01',
-          'anthropic-dangerous-direct-browser-access': 'true',
-        },
-        body: JSON.stringify(body),
-      });
-      if (!res.ok) { const err = await res.text(); throw new Error(`Anthropic API Error ${res.status}: ${err}`); }
-      const data = await res.json();
-      return data.content.map(c => c.text || '').join('');
+      if (onChunk) {
+        body.stream = true;
+        const res = await fetch(catalog.baseUrl, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'x-api-key': key,
+            'anthropic-version': '2023-06-01',
+            'anthropic-dangerous-direct-browser-access': 'true',
+          },
+          body: JSON.stringify(body),
+        });
+        if (!res.ok) { const err = await res.text(); throw new Error(`Anthropic API Error ${res.status}: ${err}`); }
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let full = '';
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          const chunk = decoder.decode(value, { stream: true });
+          const lines = chunk.split('\n');
+          for (const line of lines) {
+            if (line.startsWith('data: ')) {
+              try {
+                const parsed = JSON.parse(line.slice(6));
+                if (parsed.type === 'content_block_delta' && parsed.delta?.text) {
+                  full += parsed.delta.text;
+                  onChunk(full);
+                }
+              } catch (e) {}
+            }
+          }
+        }
+        return full;
+      } else {
+        const res = await fetch(catalog.baseUrl, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'x-api-key': key,
+            'anthropic-version': '2023-06-01',
+            'anthropic-dangerous-direct-browser-access': 'true',
+          },
+          body: JSON.stringify(body),
+        });
+        if (!res.ok) { const err = await res.text(); throw new Error(`Anthropic API Error ${res.status}: ${err}`); }
+        const data = await res.json();
+        return data.content.map(c => c.text || '').join('');
+      }
     }
-  }, [apiKey, openaiKey, apiModel, apiProvider]);
+  }, [providerKeys, activeModel, activeProvider]);
 
-  // Default call using current provider settings
   const callClaude = useCallback(async (messages, systemPrompt = '') => {
-    return callAPI(messages, systemPrompt);
-  }, [callAPI]);
+    return callAPIStreaming(messages, systemPrompt);
+  }, [callAPIStreaming]);
 
-  // Call with editor-specific overrides (if editor has overrideModel set)
+  const callClaudeStreaming = useCallback(async (messages, systemPrompt = '', onChunk = null) => {
+    return callAPIStreaming(messages, systemPrompt, {}, onChunk);
+  }, [callAPIStreaming]);
+
   const callAsEditor = useCallback(async (editor, messages, systemPrompt = '') => {
     if (editor.overrideModel && editor.overrideProvider && editor.overrideModelId) {
-      return callAPI(messages, systemPrompt, { provider: editor.overrideProvider, model: editor.overrideModelId });
+      return callAPIStreaming(messages, systemPrompt, { provider: editor.overrideProvider, model: editor.overrideModelId });
     }
-    return callAPI(messages, systemPrompt);
-  }, [callAPI]);
+    return callAPIStreaming(messages, systemPrompt);
+  }, [callAPIStreaming]);
+
+  // Count configured providers
+  const configuredCount = Object.keys(providerKeys).filter(k => providerKeys[k]).length;
 
   const tabs = ['Setup', 'Outline', 'Chapters', 'Full Book', 'Publish'];
 
   return (
     <div className="app-container">
       <header className="app-header">
-        <h1>Novel Generator</h1>
-        <div className="subtitle">AI-Powered Long-Form Fiction</div>
+        <button className="theme-toggle" onClick={() => setTheme(t => t === 'dark' ? 'light' : 'dark')} title="Toggle light/dark mode">
+          {theme === 'dark' ? '☀️' : '🌙'}
+        </button>
+        <h1>The AI Book Generator</h1>
+        <div className="subtitle">AI-Assisted Long-Form Text Writing</div>
+        <div className="instructions">
+          This tool is free to use — just provide your API key (Claude or OpenAI or both). Your key will not be transmitted or shared; it stays local on your machine. Keep it safe and don't share it! One book will cost around a dollar in tokens.
+        </div>
       </header>
 
-      {/* API KEY BAR */}
-      <div className="api-key-bar" style={{ flexWrap: 'wrap' }}>
-        <div className="field" style={{ maxWidth: 160 }}>
-          <label>Provider</label>
-          <select value={apiProvider} onChange={(e) => {
-            setApiProvider(e.target.value);
-            // Set a sensible default model when switching
-            if (e.target.value === 'openai') setApiModel('gpt-4o');
-            else setApiModel('claude-sonnet-4-20250514');
-          }}>
-            <option value="anthropic">Anthropic</option>
-            <option value="openai">OpenAI</option>
-          </select>
+      {/* PROVIDERS */}
+      <CollapsibleSection
+        title={`API Providers — ${configuredCount > 0 ? `${configuredCount} configured, active: ${PROVIDER_CATALOG[activeProvider]?.name || activeProvider}` : 'none configured'}`}
+      >
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+          {Object.entries(PROVIDER_CATALOG).map(([provId, catalog]) => {
+            const hasKey = !!providerKeys[provId];
+            const isActive = activeProvider === provId;
+            return (
+              <div key={provId} style={{
+                background: isActive ? 'var(--accent-glow)' : 'var(--bg-tertiary)',
+                border: `1px solid ${isActive ? 'var(--accent)' : hasKey ? 'var(--success)' : 'var(--border)'}`,
+                borderRadius: 'var(--radius)',
+                padding: '12px 14px',
+              }}>
+                <div className="flex-row" style={{ justifyContent: 'space-between', marginBottom: 8 }}>
+                  <div className="flex-row">
+                    <strong style={{ fontSize: '0.9rem', color: isActive ? 'var(--accent)' : 'var(--text-primary)' }}>{catalog.name}</strong>
+                    {hasKey && <span style={{ fontSize: '0.72rem', color: 'var(--success)' }}>✓ key set</span>}
+                  </div>
+                  {hasKey && (
+                    <button
+                      className={`btn btn-sm ${isActive ? 'btn-accent' : ''}`}
+                      onClick={() => {
+                        setActiveProvider(provId);
+                        // Pick first model from this provider
+                        setActiveModel(catalog.models[0].id);
+                      }}
+                    >
+                      {isActive ? 'Active' : 'Set Active'}
+                    </button>
+                  )}
+                </div>
+                <div className="flex-row" style={{ gap: 8 }}>
+                  <input
+                    type="text"
+                    value={providerKeys[provId] || ''}
+                    onChange={e => setProviderKeys(prev => ({ ...prev, [provId]: e.target.value }))}
+                    placeholder={catalog.placeholder}
+                    style={{ fontFamily: 'var(--font-mono)', fontSize: '0.82rem', flex: 1 }}
+                  />
+                  {isActive && (
+                    <select
+                      value={activeModel}
+                      onChange={e => setActiveModel(e.target.value)}
+                      style={{ maxWidth: 200 }}
+                    >
+                      {catalog.models.map(m => (
+                        <option key={m.id} value={m.id}>{m.label}</option>
+                      ))}
+                    </select>
+                  )}
+                </div>
+              </div>
+            );
+          })}
         </div>
 
-        <div className="field">
-          <label>Anthropic API Key</label>
-          <input
-            type="text"
-            value={apiKey}
-            onChange={(e) => setApiKey(e.target.value)}
-            placeholder="sk-ant-..."
-            style={{ fontFamily: 'var(--font-mono)', fontSize: '0.82rem' }}
-          />
-        </div>
-        <div className="field">
-          <label>OpenAI API Key</label>
-          <input
-            type="text"
-            value={openaiKey}
-            onChange={(e) => setOpenaiKey(e.target.value)}
-            placeholder="sk-..."
-            style={{ fontFamily: 'var(--font-mono)', fontSize: '0.82rem' }}
-          />
-        </div>
+      </CollapsibleSection>
 
-        <div className="field" style={{ maxWidth: 260 }}>
-          <label>Model</label>
-          {apiProvider === 'anthropic' ? (
-            <select value={apiModel} onChange={(e) => setApiModel(e.target.value)}>
-              <option value="claude-sonnet-4-20250514">Claude Sonnet 4</option>
-              <option value="claude-opus-4-20250514">Claude Opus 4</option>
-              <option value="claude-haiku-4-5-20251001">Claude Haiku 4.5</option>
-            </select>
-          ) : (
-            <select value={apiModel} onChange={(e) => setApiModel(e.target.value)}>
-              <option value="gpt-4o">GPT-4o</option>
-              <option value="gpt-4o-mini">GPT-4o Mini</option>
-              <option value="gpt-4.1">GPT-4.1</option>
-              <option value="gpt-4.1-mini">GPT-4.1 Mini</option>
-              <option value="o3">o3</option>
-              <option value="o4-mini">o4-mini</option>
-            </select>
-          )}
-        </div>
-
-        <div className="flex-row">
-          <button className="btn btn-sm" onClick={exportProject}>Export JSON</button>
-          <button className="btn btn-sm" onClick={importProject}>Import JSON</button>
-          <button className="btn btn-sm btn-danger" onClick={clearProject}>New Project</button>
-        </div>
+      {/* PROJECT ACTIONS */}
+      <div className="flex-row mb-md" style={{ justifyContent: 'flex-end' }}>
+        <button className="btn btn-sm" onClick={exportProject}>Export JSON</button>
+        <button className="btn btn-sm" onClick={importProject}>Import JSON</button>
+        <button className="btn btn-sm btn-danger" onClick={clearProject}>New Project</button>
       </div>
 
       {/* TABS */}
@@ -283,10 +436,13 @@ export default function App() {
           chapters={chapters}
           setChapters={setChapters}
           callClaude={callClaude}
+          callClaudeStreaming={callClaudeStreaming}
           callAsEditor={callAsEditor}
           loading={loading}
           setLoading={setLoading}
           setTab={setTab}
+          cancelRef={cancelRef}
+          activeProvider={activeProvider}
         />
       )}
       {tab === 2 && (
@@ -296,9 +452,11 @@ export default function App() {
           chapters={chapters}
           setChapters={setChapters}
           callClaude={callClaude}
+          callClaudeStreaming={callClaudeStreaming}
           callAsEditor={callAsEditor}
           loading={loading}
           setLoading={setLoading}
+          activeProvider={activeProvider}
         />
       )}
       {tab === 3 && (

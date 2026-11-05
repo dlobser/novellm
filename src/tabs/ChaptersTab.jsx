@@ -1,8 +1,10 @@
 import React, { useState, useEffect } from 'react';
 import Loading from '../components/Loading.jsx';
 import { buildProjectContext, buildChapterContext, generateChapterSummary, stripLeadingTitle } from '../promptUtils.js';
+import { PROVIDER_CATALOG } from '../App.jsx';
 
-export default function ChaptersTab({ project, outline, chapters, setChapters, callClaude, callAsEditor, loading, setLoading }) {
+export default function ChaptersTab({ project, outline, chapters, setChapters, callClaude, callClaudeStreaming, callAsEditor, loading, setLoading, activeProvider }) {
+  const compact = (PROVIDER_CATALOG[activeProvider]?.contextWindow || 200000) < 64000;
   const writtenIndices = Object.keys(chapters).map(Number).sort((a, b) => a - b);
   const [currentIdx, setCurrentIdx] = useState(writtenIndices[0] ?? 0);
   const [revisionNotes, setRevisionNotes] = useState('');
@@ -29,7 +31,7 @@ export default function ChaptersTab({ project, outline, chapters, setChapters, c
     setLoading(l => ({ ...l, [loadKey]: true }));
     try {
       const ctx = buildProjectContext(project, currentIdx);
-      const chapterCtx = buildChapterContext(outline, chapters, currentIdx);
+      const chapterCtx = buildChapterContext(outline, chapters, currentIdx, compact);
       const sysPrompt = project.systemPrompt
         ? `You are a master novelist writing a full chapter of a novel. ${project.systemPrompt}`
         : 'You are a master novelist writing a full chapter of a novel.';
@@ -42,7 +44,14 @@ export default function ChaptersTab({ project, outline, chapters, setChapters, c
         prompt += `Write Chapter ${currentIdx + 1}: "${outline[currentIdx]?.title}" in full. Target between ${project.chapterWordCountMin || 2000} and ${project.chapterWordCountMax || 5000} words — use the full range as the content demands. Write the complete chapter text. Do not include the chapter title, just begin the narrative.`;
       }
 
-      let text = await callClaude([{ role: 'user', content: prompt }], sysPrompt);
+      const onChunk = (partialText) => {
+        setChapters(prev => ({
+          ...prev,
+          [currentIdx]: { ...(prev[currentIdx] || {}), text: partialText, summary: prev[currentIdx]?.summary || '', feedback: prev[currentIdx]?.feedback || [], revisionNotes: notes }
+        }));
+      };
+
+      let text = await callClaudeStreaming([{ role: 'user', content: prompt }], sysPrompt, onChunk);
       text = stripLeadingTitle(text, outline[currentIdx]?.title || '');
 
       // Regenerate the factual continuity summary
@@ -64,7 +73,46 @@ export default function ChaptersTab({ project, outline, chapters, setChapters, c
     }
   };
 
-  const getEditorialFeedback = async () => {
+ // Lite rewrite: just chapter text + notes, no project/chapter context
+ const regenerateChapterLite = async (notes) => {
+   const loadKey = 'regen_chapter';
+   setLoading(l => ({ ...l, [loadKey]: true }));
+   try {
+     const sysPrompt = project.systemPrompt
+       ? `You are a master novelist writing a full chapter of a novel. ${project.systemPrompt}`
+       : 'You are a master novelist writing a full chapter of a novel.';
+
+     const prompt = `Here is the current draft of Chapter ${currentIdx + 1}: "${outline[currentIdx]?.title}":\n\n${currentChapter?.text || ''}\n\nRevision notes:\n${notes}\n\nRewrite the chapter incorporating the revision notes. Target between ${project.chapterWordCountMin || 2000} and ${project.chapterWordCountMax || 5000} words. Write ONLY the revised chapter prose.`;
+
+     const onChunk = (partialText) => {
+       setChapters(prev => ({
+         ...prev,
+         [currentIdx]: { ...(prev[currentIdx] || {}), text: partialText, summary: prev[currentIdx]?.summary || '', feedback: prev[currentIdx]?.feedback || [], revisionNotes: notes }
+       }));
+     };
+
+     let text = await callClaudeStreaming([{ role: 'user', content: prompt }], sysPrompt, onChunk);
+     text = stripLeadingTitle(text, outline[currentIdx]?.title || '');
+
+     let summary = '';
+     try {
+       summary = await generateChapterSummary(callClaude, text, outline[currentIdx]?.title, currentIdx);
+     } catch (e) {
+       console.warn('Failed to generate summary:', e);
+     }
+
+     setChapters(prev => ({
+       ...prev,
+       [currentIdx]: { ...prev[currentIdx], text, summary, revisionNotes: notes }
+     }));
+   } catch (err) {
+     alert('Error regenerating: ' + err.message);
+   } finally {
+     setLoading(l => ({ ...l, [loadKey]: false }));
+   }
+ };
+
+ const getEditorialFeedback = async () => {
     const loadKey = 'editorial';
     setLoading(l => ({ ...l, [loadKey]: true }));
     try {
@@ -79,9 +127,14 @@ export default function ChaptersTab({ project, outline, chapters, setChapters, c
 
       const newFeedback = [];
       for (const editor of activeList) {
-        const result = await callAsEditor(editor, [{
+      let editorPrompt = `You are an editorial reviewer named "${editor.name}". ${editor.systemPrompt}`;
+      if (editor.includeProjectKnowledge) {
+        const ctx = buildProjectContext(project, currentIdx);
+        editorPrompt += `\n\nProject context:\n${ctx}`;
+      }
+      const result = await callAsEditor(editor, [{
           role: 'user',
-          content: `You are an editorial reviewer named "${editor.name}". ${editor.systemPrompt}\n\nReview the following chapter from the novel "${project.title}":\n\nChapter ${currentIdx + 1}: ${outline[currentIdx]?.title}\n\n${currentChapter?.text}\n\nProvide specific, actionable editorial feedback. Be detailed and constructive. Point out specific passages that could be improved and suggest how.`
+          content: `${editorPrompt}\n\nReview the following chapter from the novel "${project.title}":\n\nChapter ${currentIdx + 1}: ${outline[currentIdx]?.title}\n\n${currentChapter?.text}\n\nProvide specific, actionable editorial feedback. Be detailed and constructive. Point out specific passages that could be improved and suggest how.`
         }]);
         newFeedback.push({ editorName: editor.name, text: result });
       }
@@ -114,9 +167,14 @@ export default function ChaptersTab({ project, outline, chapters, setChapters, c
       // Re-generate feedback with potentially updated editor system prompts
       const newFeedback = [];
       for (const editor of activeList) {
-        const result = await callAsEditor(editor, [{
+      let editorPrompt2 = `You are an editorial reviewer named "${editor.name}". ${editor.systemPrompt}`;
+      if (editor.includeProjectKnowledge) {
+        const ctx2 = buildProjectContext(project, currentIdx);
+        editorPrompt2 += `\n\nProject context:\n${ctx2}`;
+      }
+      const result = await callAsEditor(editor, [{
           role: 'user',
-          content: `You are an editorial reviewer named "${editor.name}". ${editor.systemPrompt}\n\nReview the following chapter from the novel "${project.title}":\n\nChapter ${currentIdx + 1}: ${outline[currentIdx]?.title}\n\n${currentChapter?.text}\n\nProvide specific, actionable editorial feedback. Be detailed and constructive.`
+          content: `${editorPrompt2}\n\nReview the following chapter from the novel "${project.title}":\n\nChapter ${currentIdx + 1}: ${outline[currentIdx]?.title}\n\n${currentChapter?.text}\n\nProvide specific, actionable editorial feedback. Be detailed and constructive.`
         }]);
         newFeedback.push({ editorName: editor.name, text: result });
       }
@@ -249,13 +307,23 @@ export default function ChaptersTab({ project, outline, chapters, setChapters, c
                 {loading.regen_chapter ? (
                   <Loading text="Rewriting..." />
                 ) : (
-                  <button
-                    className="btn btn-accent"
-                    onClick={() => regenerateChapter(revisionNotes)}
-                    disabled={!revisionNotes.trim()}
-                  >
-                    Rewrite with Notes
-                  </button>
+                  <>
+                    <button
+                      className="btn btn-accent"
+                      onClick={() => regenerateChapter(revisionNotes)}
+                      disabled={!revisionNotes.trim()}
+                    >
+                      Rewrite with Notes
+                    </button>
+                    <button
+                      className="btn"
+                      onClick={() => regenerateChapterLite(revisionNotes)}
+                      disabled={!revisionNotes.trim()}
+                      title="Sends only the chapter text and your notes — no project context or surrounding chapters. Use when hitting context limits."
+                    >
+                      Quick Rewrite
+                    </button>
+                  </>
                 )}
               </div>
             </div>
