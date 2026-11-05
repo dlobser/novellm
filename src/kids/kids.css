@@ -101,6 +101,7 @@
 
 .kb-design { display: grid; grid-template-columns: minmax(330px, 400px) 1fr; gap: 16px; align-items: start; }
 .kb-design-controls { display: flex; flex-direction: column; gap: 10px; max-height: calc(100vh - 110px); overflow-y: auto; padding-right: 6px; position: sticky; top: 10px; }
+.kb-design-controls > .kb-seg { flex-shrink: 0; }
 .kb-design-preview { display: flex; flex-direction: column; gap: 6px; position: sticky; top: 10px; }
 .kb-preview { width: 100%; border: 1px solid var(--border); border-radius: var(--radius-lg); background: #dcd8cf; }
 .kb-font-sample { margin-top: 6px; font-size: 1.15rem; padding: 6px 10px; background: var(--bg-tertiary); border-radius: var(--radius); line-height: 1.3; }
