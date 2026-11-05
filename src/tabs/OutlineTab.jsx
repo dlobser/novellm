@@ -1,10 +1,14 @@
 import React, { useState } from 'react';
 import Loading from '../components/Loading.jsx';
 import { buildProjectContext, buildOutlineContext, buildChapterContext, generateChapterSummary, stripLeadingTitle } from '../promptUtils.js';
+import { PROVIDER_CATALOG } from '../App.jsx';
 
-export default function OutlineTab({ project, outline, setOutline, chapters, setChapters, callClaude, callAsEditor, loading, setLoading, setTab }) {
+export default function OutlineTab({ project, outline, setOutline, chapters, setChapters, callClaude, callClaudeStreaming, callAsEditor, loading, setLoading, setTab, cancelRef, activeProvider }) {
+  const compact = (PROVIDER_CATALOG[activeProvider]?.contextWindow || 200000) < 64000;
   const [selected, setSelected] = useState(new Set());
   const [editorsForGenerate, setEditorsForGenerate] = useState(new Set());
+  const [outlineNotes, setOutlineNotes] = useState({}); // per-chapter notes for outline regeneration
+  const [isBatchRunning, setIsBatchRunning] = useState(false);
 
   const updateChapter = (idx, field, val) => {
     const next = [...outline];
@@ -27,12 +31,10 @@ export default function OutlineTab({ project, outline, setOutline, chapters, set
     const newIdx = idx + direction;
     if (newIdx < 0 || newIdx >= outline.length) return;
 
-    // Swap in outline
     const newOutline = [...outline];
     [newOutline[idx], newOutline[newIdx]] = [newOutline[newIdx], newOutline[idx]];
     setOutline(newOutline);
 
-    // Swap in chapters data (reindex keys)
     const newChapters = { ...chapters };
     const chA = chapters[idx];
     const chB = chapters[newIdx];
@@ -42,7 +44,6 @@ export default function OutlineTab({ project, outline, setOutline, chapters, set
       setChapters(newChapters);
     }
 
-    // Update selection
     const newSelected = new Set();
     selected.forEach(s => {
       if (s === idx) newSelected.add(newIdx);
@@ -58,17 +59,14 @@ export default function OutlineTab({ project, outline, setOutline, chapters, set
     const newOutline = outline.filter((_, i) => i !== idx);
     setOutline(newOutline);
 
-    // Reindex chapters: shift everything above idx down by 1
     const newChapters = {};
     Object.keys(chapters).forEach(k => {
       const ki = Number(k);
       if (ki < idx) newChapters[ki] = chapters[ki];
       else if (ki > idx) newChapters[ki - 1] = chapters[ki];
-      // ki === idx gets dropped
     });
     setChapters(newChapters);
 
-    // Clean up selection
     const newSelected = new Set();
     selected.forEach(s => {
       if (s < idx) newSelected.add(s);
@@ -86,9 +84,15 @@ export default function OutlineTab({ project, outline, setOutline, chapters, set
         ? `You are a master novelist. ${project.systemPrompt}`
         : 'You are a master novelist.';
 
+      const notes = outlineNotes[idx] || '';
+      let notesInstruction = '';
+      if (notes.trim()) {
+        notesInstruction = `\n\nThe author has provided the following editorial notes for this chapter. Use these to guide your revision:\n${notes}`;
+      }
+
       const result = await callClaude([{
         role: 'user',
-        content: `Here is the full novel project context:\n${ctx}\n\nHere is the current outline:\n${outlineCtx}\n\nRegenerate ONLY Chapter ${idx + 1} ("${outline[idx].title}"). Provide an updated title and description. Return ONLY valid JSON: {"title": "...", "description": "..."}\nNo markdown, no code fences.`
+        content: `Here is the full novel project context:\n${ctx}\n\nHere is the current outline:\n${outlineCtx}\n\nRegenerate ONLY Chapter ${idx + 1} ("${outline[idx].title}"). Provide an updated title and description. Return ONLY valid JSON: {"title": "...", "description": "..."}${notesInstruction}\nNo markdown, no code fences.`
       }], sysPrompt);
 
       const cleaned = result.replace(/```json\s*/g, '').replace(/```\s*/g, '').trim();
@@ -107,42 +111,51 @@ export default function OutlineTab({ project, outline, setOutline, chapters, set
     setLoading(l => ({ ...l, [loadKey]: true }));
     try {
       const ctx = buildProjectContext(project, idx);
-      const chapterCtx = buildChapterContext(outline, chapters, idx);
+      const chapterCtx = buildChapterContext(outline, chapters, idx, compact);
       const sysPrompt = project.systemPrompt
         ? `You are a master novelist writing a full chapter of a novel. ${project.systemPrompt}`
         : 'You are a master novelist writing a full chapter of a novel.';
 
-      let text = await callClaude([{
+      // Use streaming to show text as it generates
+      const onChunk = (partialText) => {
+        setChapters(prev => ({
+          ...prev,
+          [idx]: { ...(prev[idx] || {}), text: partialText, summary: prev[idx]?.summary || '', feedback: prev[idx]?.feedback || [], revisionNotes: '' }
+        }));
+      };
+
+      let text = await callClaudeStreaming([{
         role: 'user',
         content: `PROJECT:\n${ctx}\n\nSTORY CONTEXT:\n${chapterCtx}\n\nWrite Chapter ${idx + 1}: "${outline[idx].title}" in full. Target between ${project.chapterWordCountMin || 2000} and ${project.chapterWordCountMax || 5000} words — use the full range as the content demands; give quieter moments room to breathe and keep action tight. Write the complete chapter text — no summaries, no outlines, just the actual prose of the chapter. Do not include the chapter title at the start, just begin the narrative.`
-      }], sysPrompt);
+      }], sysPrompt, onChunk);
 
       if (withEditorial && project.editors.length > 0) {
         const activeEditors = editorsForGenerate.size > 0
           ? project.editors.filter((_, i) => editorsForGenerate.has(i))
           : project.editors;
 
-        // Get editorial feedback
         let allFeedback = '';
         for (const editor of activeEditors) {
+          // Build editor prompt with optional project knowledge
+          let editorPrompt = `You are an editorial reviewer named "${editor.name}". ${editor.systemPrompt}`;
+          if (editor.includeProjectKnowledge) {
+            editorPrompt += `\n\nProject context:\n${ctx}`;
+          }
           const feedback = await callAsEditor(editor, [{
             role: 'user',
-            content: `You are an editorial reviewer named "${editor.name}". ${editor.systemPrompt}\n\nReview the following chapter from the novel "${project.title}":\n\nChapter ${idx + 1}: ${outline[idx].title}\n\n${text}\n\nProvide specific, actionable editorial feedback. Focus on what could be improved. Be detailed and constructive.`
+            content: `${editorPrompt}\n\nReview the following chapter from the novel "${project.title}":\n\nChapter ${idx + 1}: ${outline[idx].title}\n\n${text}\n\nProvide specific, actionable editorial feedback. Focus on what could be improved. Be detailed and constructive.`
           }]);
           allFeedback += `[${editor.name}]: ${feedback}\n\n`;
         }
 
-        // Rewrite with editorial notes
-        text = await callClaude([{
+        text = await callClaudeStreaming([{
           role: 'user',
           content: `PROJECT:\n${ctx}\n\nSTORY CONTEXT:\n${chapterCtx}\n\nHere is the first draft of Chapter ${idx + 1}:\n\n${text}\n\nHere is editorial feedback:\n\n${allFeedback}\n\nRewrite the chapter incorporating the editorial feedback. Target between ${project.chapterWordCountMin || 2000} and ${project.chapterWordCountMax || 5000} words. Write ONLY the revised chapter prose.`
-        }], sysPrompt);
+        }], sysPrompt, onChunk);
       }
 
-      // Strip any leading title Claude may have added
       text = stripLeadingTitle(text, outline[idx].title);
 
-      // Generate a factual continuity summary
       let summary = '';
       try {
         summary = await generateChapterSummary(callClaude, text, outline[idx].title, idx);
@@ -163,10 +176,19 @@ export default function OutlineTab({ project, outline, setOutline, chapters, set
   };
 
   const generateMultiple = async (indices, withEditorial = false) => {
+    cancelRef.current = false;
+    setIsBatchRunning(true);
     for (const idx of indices) {
+      if (cancelRef.current) break;
       await generateChapterText(idx, withEditorial, true);
     }
+    setIsBatchRunning(false);
+    cancelRef.current = false;
     setTab(2);
+  };
+
+  const handleCancel = () => {
+    cancelRef.current = true;
   };
 
   if (outline.length === 0) {
@@ -188,32 +210,37 @@ export default function OutlineTab({ project, outline, setOutline, chapters, set
           </button>
           <button
             className="btn btn-accent btn-sm"
-            disabled={selected.size === 0 || Object.entries(loading).some(([k, v]) => k.startsWith('gen_ch_') && v)}
+            disabled={selected.size === 0 || isBatchRunning}
             onClick={() => generateMultiple([...selected])}
           >
             Generate Selected ({selected.size})
           </button>
           <button
             className="btn btn-accent btn-sm"
-            disabled={Object.entries(loading).some(([k, v]) => k.startsWith('gen_ch_') && v)}
+            disabled={isBatchRunning}
             onClick={() => generateMultiple(outline.map((_, i) => i))}
           >
             Generate All
           </button>
           <button
             className="btn btn-sm"
-            disabled={selected.size === 0 || Object.entries(loading).some(([k, v]) => k.startsWith('gen_ch_') && v)}
+            disabled={selected.size === 0 || isBatchRunning}
             onClick={() => generateMultiple([...selected], true)}
           >
             Generate Selected w/ Editorial
           </button>
           <button
             className="btn btn-sm"
-            disabled={Object.entries(loading).some(([k, v]) => k.startsWith('gen_ch_') && v)}
+            disabled={isBatchRunning}
             onClick={() => generateMultiple(outline.map((_, i) => i), true)}
           >
             Generate All w/ Editorial
           </button>
+          {isBatchRunning && (
+            <button className="btn btn-danger btn-sm" onClick={handleCancel}>
+              Cancel
+            </button>
+          )}
         </div>
       </div>
 
@@ -270,12 +297,24 @@ export default function OutlineTab({ project, outline, setOutline, chapters, set
               rows={3}
               style={{ width: '100%' }}
             />
+            {/* Outline regeneration notes */}
+            <div className="outline-notes-input">
+              <textarea
+                value={outlineNotes[idx] || ''}
+                onChange={e => setOutlineNotes(prev => ({ ...prev, [idx]: e.target.value }))}
+                placeholder="Editorial notes for outline regeneration (optional) — e.g. 'focus more on the betrayal subplot' or 'move the confrontation earlier'"
+                rows={2}
+                style={{ width: '100%' }}
+              />
+            </div>
           </div>
           <div className="chapter-card-actions">
             {loading[`outline_${idx}`] ? (
               <Loading text="Regenerating outline..." />
             ) : (
-              <button className="btn btn-sm" onClick={() => regenerateOutlineChapter(idx)}>Regenerate Outline</button>
+              <button className="btn btn-sm" onClick={() => regenerateOutlineChapter(idx)}>
+                {outlineNotes[idx]?.trim() ? 'Regenerate Outline w/ Notes' : 'Regenerate Outline'}
+              </button>
             )}
             {loading[`gen_ch_${idx}`] ? (
               <Loading text="Writing chapter..." />

@@ -1,15 +1,18 @@
-import React from 'react';
+import React, { useState } from 'react';
 import CollapsibleSection from '../components/CollapsibleSection.jsx';
 import DynamicArray from '../components/DynamicArray.jsx';
 import Loading from '../components/Loading.jsx';
 import { buildProjectContext } from '../promptUtils.js';
+import { PROVIDER_CATALOG } from '../App.jsx';
 
 const BACKGROUND_TYPES = ['research', 'character bio', 'world building', 'style guide', 'interview', 'source material', 'statistics', 'timeline', 'notes', 'other'];
 
 export default function SetupTab({ project, setProject, callClaude, outline, setOutline, loading, setLoading, setTab, chapterCount }) {
   const up = (key, val) => setProject({ ...project, [key]: val });
+  const [autofillMode, setAutofillMode] = useState(null); // null, 'replace', 'append'
 
-  const autofillFromSynopsis = async () => {
+  const autofillFromSynopsis = async (mode) => {
+    setAutofillMode(null);
     if (!project.synopsis.trim()) {
       alert('Write a synopsis first, then click Autofill.');
       return;
@@ -19,7 +22,7 @@ export default function SetupTab({ project, setProject, callClaude, outline, set
       const sysPrompt = 'You are an expert story analyst and writing assistant.';
       const result = await callClaude([{
         role: 'user',
-        content: `Analyze the following synopsis and extract/generate structured information for a novel project. Return ONLY valid JSON with no markdown or code fences.\n\nSynopsis:\n${project.synopsis}\n\n${project.title ? `Title: ${project.title}\n\n` : ''}Return a JSON object with these fields:\n- "characters": array of strings, each describing a character (name, role, brief description). Include all characters mentioned or implied.\n- "settings": array of strings, each describing a key location, time period, object, or world detail.\n- "background": array of objects with {"type": string, "name": string, "content": string, "chapters": "all"}. Type should be one of: "character bio", "world building", "style guide", "timeline", "notes". Generate 2-4 detailed background entries covering the most important elements (key character bios, world details, timeline if relevant).\n- "systemPrompt": a suggested writing style prompt based on the tone and genre implied by the synopsis (1-2 sentences).\n\nBe thorough — extract every character, location, and detail you can infer. For background entries, write substantive content (several sentences each). Respond with ONLY the JSON object.`
+        content: `Analyze the following synopsis and extract/generate structured information for a novel project. Return ONLY valid JSON with no markdown or code fences.\n\nSynopsis:\n${project.synopsis}\n\n${project.title ? `Title: ${project.title}\n\n` : ''}Return a JSON object with these fields:\n- "title": a suggested title for the novel (generate one even if a title was provided above — the user can choose whether to use it).\n- "characters": array of strings, each describing a character (name, role, brief description). Include all characters mentioned or implied.\n- "settings": array of strings, each describing a key location, time period, object, or world detail.\n- "background": array of objects with {"type": string, "name": string, "content": string, "chapters": "all"}. Type should be one of: "character bio", "world building", "style guide", "timeline", "notes". Generate 2-4 detailed background entries covering the most important elements (key character bios, world details, timeline if relevant).\n- "systemPrompt": a suggested writing style prompt based on the tone and genre implied by the synopsis (1-2 sentences).\n\nBe thorough — extract every character, location, and detail you can infer. For background entries, write substantive content (several sentences each). Respond with ONLY the JSON object.`
       }], sysPrompt);
 
       const cleaned = result.replace(/```json\s*/g, '').replace(/```\s*/g, '').trim();
@@ -32,23 +35,26 @@ export default function SetupTab({ project, setProject, callClaude, outline, set
         else throw new Error('Could not parse AI response');
       }
 
-      // Merge — append to existing rather than overwrite
       const updates = {};
       if (parsed.characters && Array.isArray(parsed.characters)) {
-        updates.characters = [...(project.characters || []), ...parsed.characters];
+        updates.characters = mode === 'replace' ? parsed.characters : [...(project.characters || []), ...parsed.characters];
       }
       if (parsed.settings && Array.isArray(parsed.settings)) {
-        updates.settings = [...(project.settings || []), ...parsed.settings];
+        updates.settings = mode === 'replace' ? parsed.settings : [...(project.settings || []), ...parsed.settings];
       }
       if (parsed.background && Array.isArray(parsed.background)) {
-        updates.background = [...(project.background || []), ...parsed.background.map(b => ({
+        const newBg = parsed.background.map(b => ({
           type: b.type || 'notes',
           name: b.name || '',
           content: b.content || '',
           chapters: b.chapters || 'all',
-        }))];
+        }));
+        updates.background = mode === 'replace' ? newBg : [...(project.background || []), ...newBg];
       }
-      if (parsed.systemPrompt && !project.systemPrompt) {
+      if (parsed.title && (!project.title || mode === 'replace')) {
+        updates.title = parsed.title;
+      }
+      if (parsed.systemPrompt && (!project.systemPrompt || mode === 'replace')) {
         updates.systemPrompt = parsed.systemPrompt;
       }
 
@@ -68,17 +74,10 @@ export default function SetupTab({ project, setProject, callClaude, outline, set
         ? `You are a master novelist and story architect. ${project.systemPrompt}`
         : 'You are a master novelist and story architect.';
 
-      const fm = project.frontBackMatter || {};
-      let matterInstructions = '';
-      if (fm.copyrightNotice) matterInstructions += '\n- Include a "Copyright Notice" entry near the front.';
-      if (fm.acknowledgements) matterInstructions += '\n- Include an "Acknowledgements" entry near the end.';
-      if (fm.bibliography) matterInstructions += '\n- Include a "Bibliography" entry at the end.';
-      if (fm.index) matterInstructions += '\n- Include an "Index" entry as the very last item.';
-
       const result = await callClaude([
         {
           role: 'user',
-          content: `Based on the following novel project, generate a detailed chapter-by-chapter outline. Each chapter should have a title and a one-paragraph description of what happens. Return ONLY valid JSON — an array of objects with "title" and "description" fields. No markdown, no code fences, no preamble.\n\n${ctx}\n\nGenerate exactly ${project.chapterCount || 25} narrative chapters for a full-length novel.${matterInstructions ? '\n\nAdditionally, include the following front/back matter sections as entries in the array:' + matterInstructions : ''}\n\nRespond with ONLY the JSON array.`
+          content: `Based on the following novel project, generate a detailed chapter-by-chapter outline. Each chapter should have a title and a one-paragraph description of what happens. Return ONLY valid JSON — an array of objects with "title" and "description" fields. No markdown, no code fences, no preamble.\n\n${ctx}\n\nGenerate exactly ${project.chapterCount || 25} narrative chapters for a full-length novel. Do NOT include front or back matter (copyright, acknowledgements, bibliography, index, etc.) — only narrative chapters.\n\nRespond with ONLY the JSON array.`
         }
       ], sysPrompt);
 
@@ -135,12 +134,44 @@ export default function SetupTab({ project, setProject, callClaude, outline, set
         {loading.autofill ? (
           <Loading text="Analyzing synopsis..." />
         ) : (
-          <button className="btn btn-accent" onClick={autofillFromSynopsis} disabled={!project.synopsis.trim()}>
+          <button className="btn btn-accent" onClick={() => {
+            const hasExisting = (project.characters?.length > 0) || (project.settings?.length > 0) || (project.background?.length > 0) || project.systemPrompt || project.title;
+            if (hasExisting) {
+              setAutofillMode('pending');
+            } else {
+              autofillFromSynopsis('replace');
+            }
+          }} disabled={!project.synopsis.trim()}>
             Autofill from Synopsis
           </button>
         )}
-        <p className="text-muted mt-sm" style={{ fontSize: '0.78rem' }}>Generates characters, world details, background, and style from your synopsis. Appends to existing entries.</p>
+        <p className="text-muted mt-sm" style={{ fontSize: '0.78rem' }}>Generates characters, world details, background, and style from your synopsis.</p>
       </div>
+
+      {/* AUTOFILL MODE MODAL */}
+      {autofillMode === 'pending' && (
+        <div className="modal-overlay" onClick={() => setAutofillMode(null)}>
+          <div className="modal-box" onClick={e => e.stopPropagation()}>
+            <h3>Autofill from Synopsis</h3>
+            <p>How should the generated content be added?</p>
+            <div className="modal-actions">
+              <button className="btn btn-accent" onClick={() => autofillFromSynopsis('replace')}>Replace</button>
+              <button className="btn" onClick={() => autofillFromSynopsis('append')}>Append</button>
+              <button className="btn" onClick={() => setAutofillMode(null)}>Cancel</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* SYSTEM PROMPT */}
+      <CollapsibleSection title="System Prompt (Style)" defaultOpen={true}>
+        <textarea
+          className="large"
+          value={project.systemPrompt}
+          onChange={e => up('systemPrompt', e.target.value)}
+          placeholder="Define the writing style, voice, tone, POV, tense, etc. E.g.: Write in first person present tense with a literary, introspective style reminiscent of Donna Tartt..."
+        />
+      </CollapsibleSection>
 
       {/* CHARACTERS */}
       <CollapsibleSection title="Characters" defaultOpen={true}>
@@ -179,23 +210,13 @@ export default function SetupTab({ project, setProject, callClaude, outline, set
         />
       </CollapsibleSection>
 
-      {/* SYSTEM PROMPT */}
-      <CollapsibleSection title="System Prompt (Style)">
-        <textarea
-          className="large"
-          value={project.systemPrompt}
-          onChange={e => up('systemPrompt', e.target.value)}
-          placeholder="Define the writing style, voice, tone, POV, tense, etc. E.g.: Write in first person present tense with a literary, introspective style reminiscent of Donna Tartt..."
-        />
-      </CollapsibleSection>
-
       {/* EDITORS */}
       <CollapsibleSection title="Editors">
         <p className="text-muted mb-md">Define editorial personas that will review and critique chapters.</p>
         <DynamicArray
           items={project.editors}
           setItems={v => up('editors', v)}
-          newItem={() => ({ name: '', systemPrompt: '', overrideModel: false, overrideProvider: 'openai', overrideModelId: 'gpt-4o' })}
+          newItem={() => ({ name: '', systemPrompt: '', overrideModel: false, overrideProvider: 'anthropic', overrideModelId: 'claude-sonnet-4-20250514', includeProjectKnowledge: false })}
           addLabel="+ Add Editor"
           renderItem={(item, idx, update) => (
             <>
@@ -213,7 +234,16 @@ export default function SetupTab({ project, setProject, callClaude, outline, set
                 placeholder="Editor system prompt — what they focus on, their critical lens..."
                 rows={3}
               />
-              <div style={{ marginTop: 6 }}>
+              <div style={{ marginTop: 6, display: 'flex', flexDirection: 'column', gap: 6 }}>
+                <label style={{ display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer', fontSize: '0.82rem', color: 'var(--text-secondary)' }}>
+                  <input
+                    type="checkbox"
+                    checked={!!item.includeProjectKnowledge}
+                    onChange={e => update({ ...item, includeProjectKnowledge: e.target.checked })}
+                    style={{ accentColor: 'var(--accent)' }}
+                  />
+                  Include project knowledge
+                </label>
                 <label style={{ display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer', fontSize: '0.82rem', color: 'var(--text-secondary)' }}>
                   <input
                     type="checkbox"
@@ -226,33 +256,26 @@ export default function SetupTab({ project, setProject, callClaude, outline, set
                 {item.overrideModel && (
                   <div className="fields-row" style={{ marginTop: 6 }}>
                     <select
-                      value={item.overrideProvider || 'openai'}
+                      value={item.overrideProvider || 'anthropic'}
                       onChange={e => {
                         const prov = e.target.value;
-                        const defaultModel = prov === 'anthropic' ? 'claude-sonnet-4-20250514' : 'gpt-4o';
-                        update({ ...item, overrideProvider: prov, overrideModelId: defaultModel });
+                        const cat = PROVIDER_CATALOG[prov];
+                        update({ ...item, overrideProvider: prov, overrideModelId: cat?.models[0]?.id || '' });
                       }}
                       style={{ maxWidth: 140 }}
                     >
-                      <option value="anthropic">Anthropic</option>
-                      <option value="openai">OpenAI</option>
+                      {Object.entries(PROVIDER_CATALOG).map(([id, cat]) => (
+                        <option key={id} value={id}>{cat.name}</option>
+                      ))}
                     </select>
-                    {(item.overrideProvider || 'openai') === 'anthropic' ? (
-                      <select value={item.overrideModelId || 'claude-sonnet-4-20250514'} onChange={e => update({ ...item, overrideModelId: e.target.value })}>
-                        <option value="claude-sonnet-4-20250514">Claude Sonnet 4</option>
-                        <option value="claude-opus-4-20250514">Claude Opus 4</option>
-                        <option value="claude-haiku-4-5-20251001">Claude Haiku 4.5</option>
-                      </select>
-                    ) : (
-                      <select value={item.overrideModelId || 'gpt-4o'} onChange={e => update({ ...item, overrideModelId: e.target.value })}>
-                        <option value="gpt-4o">GPT-4o</option>
-                        <option value="gpt-4o-mini">GPT-4o Mini</option>
-                        <option value="gpt-4.1">GPT-4.1</option>
-                        <option value="gpt-4.1-mini">GPT-4.1 Mini</option>
-                        <option value="o3">o3</option>
-                        <option value="o4-mini">o4-mini</option>
-                      </select>
-                    )}
+                    <select
+                      value={item.overrideModelId || ''}
+                      onChange={e => update({ ...item, overrideModelId: e.target.value })}
+                    >
+                      {(PROVIDER_CATALOG[item.overrideProvider || 'anthropic']?.models || []).map(m => (
+                        <option key={m.id} value={m.id}>{m.label}</option>
+                      ))}
+                    </select>
                   </div>
                 )}
               </div>
@@ -270,8 +293,8 @@ export default function SetupTab({ project, setProject, callClaude, outline, set
           newItem={() => ({ type: 'research', name: '', content: '', chapters: 'all' })}
           addLabel="+ Add Reference"
           renderItem={(item, idx, update) => {
-            const chapterAssign = item.chapters || 'all';
-            const isAll = chapterAssign === 'all' || (Array.isArray(chapterAssign) && chapterAssign.length === 0);
+            const chapterAssign = item.chapters;
+            const isAll = chapterAssign === 'all' || chapterAssign === undefined || chapterAssign === null;
             const totalCh = outline.length || project.chapterCount || 25;
 
             return (
