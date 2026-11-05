@@ -1,6 +1,7 @@
 // Image generation back-ends: Gemini, OpenAI, local ComfyUI, and a free placeholder.
 // Isomorphic: uses only fetch / FormData / Blob, so it runs in the browser and in Node 18+.
 // Every generator takes { prompt, refs: [{mimeType, data(base64), label}], aspect } and returns { mimeType, data }.
+import { apiFetch, apiError, cleanKey } from './apiFetch.js';
 
 export const IMAGE_PROVIDERS = {
   gemini: { label: 'Google Gemini', models: ['gemini-2.5-flash-image', 'gemini-3-pro-image-preview'] },
@@ -49,6 +50,7 @@ async function readError(res) {
 
 // ---------- Gemini ----------
 async function geminiImage(cfg, { prompt, refs, aspect }) {
+  cfg = { ...cfg, key: cleanKey(cfg.key), model: String(cfg.model || '').trim() };
   if (!cfg.key) throw new Error('Add a Gemini API key in Kids Book → Settings (or GEMINI_API_KEY for the MCP server).');
   const parts = [{ text: prompt }];
   refs.filter(r => /image\/(png|jpe?g|webp|heic|heif)/.test(r.mimeType)).forEach(r => {
@@ -60,12 +62,12 @@ async function geminiImage(cfg, { prompt, refs, aspect }) {
     generationConfig: { responseModalities: ['TEXT', 'IMAGE'], imageConfig: aspect ? { aspectRatio: aspect } : undefined },
   };
   const model = cfg.model || 'gemini-2.5-flash-image';
-  const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`, {
+  const res = await apiFetch('Gemini', `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'x-goog-api-key': cfg.key },
     body: JSON.stringify(body),
   });
-  if (!res.ok) throw new Error(`Gemini image error ${await readError(res)}`);
+  if (!res.ok) throw await apiError('Gemini (images)', res, model);
   const json = await res.json();
   const cand = json.candidates?.[0];
   const img = cand?.content?.parts?.find(p => p.inlineData || p.inline_data);
@@ -86,6 +88,7 @@ function openaiSize(aspect) {
 }
 
 async function openaiImage(cfg, { prompt, refs, aspect }) {
+  cfg = { ...cfg, key: cleanKey(cfg.key), model: String(cfg.model || '').trim() };
   if (!cfg.key) throw new Error('Add an OpenAI API key in Kids Book → Settings (or OPENAI_API_KEY for the MCP server).');
   const model = cfg.model || 'gpt-image-1';
   const size = openaiSize(aspect);
@@ -103,15 +106,15 @@ async function openaiImage(cfg, { prompt, refs, aspect }) {
       const ext = r.mimeType.split('/')[1].replace('jpeg', 'jpg');
       fd.append('image[]', new Blob([b64ToBytes(r.data)], { type: r.mimeType }), `ref${i + 1}.${ext}`);
     });
-    res = await fetch('https://api.openai.com/v1/images/edits', { method: 'POST', headers: { Authorization: `Bearer ${cfg.key}` }, body: fd });
+    res = await apiFetch('OpenAI', 'https://api.openai.com/v1/images/edits', { method: 'POST', headers: { Authorization: `Bearer ${cfg.key}` }, body: fd });
   } else {
-    res = await fetch('https://api.openai.com/v1/images/generations', {
+    res = await apiFetch('OpenAI', 'https://api.openai.com/v1/images/generations', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${cfg.key}` },
       body: JSON.stringify({ model, prompt, size, n: 1, ...(cfg.quality ? { quality: cfg.quality } : {}) }),
     });
   }
-  if (!res.ok) throw new Error(`OpenAI image error ${await readError(res)}`);
+  if (!res.ok) throw await apiError('OpenAI (images)', res, model);
   const json = await res.json();
   const item = json.data?.[0];
   if (item?.b64_json) return { mimeType: 'image/png', data: item.b64_json };
@@ -143,8 +146,10 @@ function comfyBase(url) {
   return (url || 'http://127.0.0.1:8188').replace(/\/+$/, '');
 }
 
+const COMFY_HINT = url => `Couldn't reach ComfyUI at ${comfyBase(url)}. Is it running, and was it started with --enable-cors-header "*"?`;
+
 export async function comfyCheckpoints(url) {
-  const res = await fetch(`${comfyBase(url)}/object_info/CheckpointLoaderSimple`);
+  const res = await apiFetch('ComfyUI', `${comfyBase(url)}/object_info/CheckpointLoaderSimple`, undefined, COMFY_HINT(url));
   if (!res.ok) throw new Error(`ComfyUI ${await readError(res)}`);
   const j = await res.json();
   return j.CheckpointLoaderSimple?.input?.required?.ckpt_name?.[0] || [];
@@ -200,7 +205,7 @@ async function comfyImage(cfg, { prompt, refs, aspect, seed }) {
   }
   const filled = fillPlaceholders(workflow, vars);
   const clientId = `kidsbook-${Math.random().toString(36).slice(2)}`;
-  const res = await fetch(`${base}/prompt`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ prompt: filled, client_id: clientId }) });
+  const res = await apiFetch('ComfyUI', `${base}/prompt`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ prompt: filled, client_id: clientId }) }, COMFY_HINT(base));
   if (!res.ok) throw new Error(`ComfyUI ${await readError(res)}`);
   const { prompt_id: promptId, node_errors: nodeErrors } = await res.json();
   if (nodeErrors && Object.keys(nodeErrors).length) throw new Error(`ComfyUI node errors: ${JSON.stringify(nodeErrors).slice(0, 500)}`);

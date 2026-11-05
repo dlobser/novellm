@@ -1,15 +1,18 @@
 // Text LLM calls with optional images (vision). Isomorphic.
 // images: [{ mimeType, data(base64) }]
+import { apiFetch, apiError, cleanKey } from './apiFetch.js';
 
 export const TEXT_PROVIDERS = {
   anthropic: { label: 'Anthropic (Claude)', models: ['claude-sonnet-5-5', 'claude-opus-5-5', 'claude-haiku-5-5', 'claude-sonnet-4-20250514'] },
   openai: { label: 'OpenAI', models: ['gpt-5', 'gpt-4.1', 'gpt-4o', 'gpt-4.1-mini'] },
-  gemini: { label: 'Google Gemini', models: ['gemini-2.5-flash', 'gemini-2.5-pro'] },
+  gemini: { label: 'Google Gemini', models: ['gemini-3.8-flash'] },
 };
 
 const VISION_OK = /image\/(png|jpe?g|gif|webp)/;
 
-export async function callText({ provider, model, key, system = '', prompt, images = [], maxTokens = 12000, json = false }) {
+export async function callText({ provider, model, key: rawKey, system = '', prompt, images = [], maxTokens = 12000, json = false }) {
+  const key = cleanKey(rawKey);
+  model = String(model || '').trim();
   if (!key) throw new Error(`No ${TEXT_PROVIDERS[provider]?.label || provider} API key. Add one in Kids Book → Settings (or the main API bar).`);
   const imgs = images.filter(i => VISION_OK.test(i.mimeType));
 
@@ -20,7 +23,7 @@ export async function callText({ provider, model, key, system = '', prompt, imag
     ];
     const body = { model, max_tokens: maxTokens, messages: [{ role: 'user', content }] };
     if (system) body.system = system;
-    const res = await fetch('https://api.anthropic.com/v1/messages', {
+    const res = await apiFetch('Anthropic', 'https://api.anthropic.com/v1/messages', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -30,7 +33,7 @@ export async function callText({ provider, model, key, system = '', prompt, imag
       },
       body: JSON.stringify(body),
     });
-    if (!res.ok) throw new Error(`Anthropic error ${res.status}: ${(await res.text()).slice(0, 500)}`);
+    if (!res.ok) throw await apiError('Anthropic', res, model);
     const data = await res.json();
     return data.content.filter(c => c.type === 'text').map(c => c.text).join('');
   }
@@ -45,12 +48,12 @@ export async function callText({ provider, model, key, system = '', prompt, imag
         ...imgs.map(i => ({ type: 'image_url', image_url: { url: `data:${i.mimeType};base64,${i.data}` } })),
       ],
     });
-    const res = await fetch('https://api.openai.com/v1/chat/completions', {
+    const res = await apiFetch('OpenAI', 'https://api.openai.com/v1/chat/completions', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${key}` },
       body: JSON.stringify({ model, messages, max_completion_tokens: maxTokens }),
     });
-    if (!res.ok) throw new Error(`OpenAI error ${res.status}: ${(await res.text()).slice(0, 500)}`);
+    if (!res.ok) throw await apiError('OpenAI', res, model);
     const data = await res.json();
     return data.choices?.[0]?.message?.content || '';
   }
@@ -60,12 +63,12 @@ export async function callText({ provider, model, key, system = '', prompt, imag
     const body = { contents: [{ role: 'user', parts }], generationConfig: { maxOutputTokens: Math.max(maxTokens, 16000) } };
     if (system) body.systemInstruction = { parts: [{ text: system }] };
     if (json) body.generationConfig.responseMimeType = 'application/json';
-    const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`, {
+    const res = await apiFetch('Gemini', `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'x-goog-api-key': key },
       body: JSON.stringify(body),
     });
-    if (!res.ok) throw new Error(`Gemini error ${res.status}: ${(await res.text()).slice(0, 500)}`);
+    if (!res.ok) throw await apiError('Gemini', res, model);
     const data = await res.json();
     return (data.candidates?.[0]?.content?.parts || []).filter(p => !p.thought).map(p => p.text || '').join('');
   }

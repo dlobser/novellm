@@ -2,7 +2,20 @@ import React, { useEffect, useState } from 'react';
 import { TEXT_PROVIDERS } from './textAI.js';
 import { IMAGE_PROVIDERS, comfyCheckpoints, DEFAULT_COMFY_WORKFLOW } from './imageProviders.js';
 import { bridgeApi } from './storage.js';
-import { Field, Spinner, Check, Img } from './ui.jsx';
+import { listModels } from './apiFetch.js';
+import { Field, Spinner, Check, Img, Lightbox } from './ui.jsx';
+
+// Sensible pick when the saved model isn't offered to this key.
+function pickDefault(provider, kind, list) {
+  if (!list.length) return null;
+  const prefer = {
+    gemini: { text: [/flash(?!.*lite)/, /pro/], image: [/flash/, /./] },
+    openai: { text: [/^gpt-5(?!.*(nano|mini))/, /^gpt-4\.1$/, /^gpt-/], image: [/^gpt-image-1$/, /^gpt-image/] },
+    anthropic: { text: [/sonnet/, /./], image: [] },
+  }[provider]?.[kind] || [];
+  for (const re of prefer) { const hit = list.find(m => re.test(m) && !/preview|exp/.test(m)) || list.find(m => re.test(m)); if (hit) return hit; }
+  return list[0];
+}
 
 function KeyInput({ value, onChange, fallback, placeholder }) {
   const [show, setShow] = useState(false);
@@ -28,6 +41,8 @@ export default function SettingsPanel({ settings, setSettings, keys, imageSettin
   const [health, setHealth] = useState(null);
   const [books, setBooks] = useState([]);
   const [shareKeys, setShareKeys] = useState(false);
+  const [models, setModels] = useState({});
+  const [lightbox, setLightbox] = useState(null);
 
   const setText = patch => setSettings(s => ({ ...s, text: { ...s.text, ...patch } }));
   const setKey = (k, v) => setSettings(s => ({ ...s, keys: { ...s.keys, [k]: v } }));
@@ -48,6 +63,35 @@ export default function SettingsPanel({ settings, setSettings, keys, imageSettin
   });
 
   useEffect(() => { if (store.kind === 'bridge') checkBridge(store.base); }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Ask the provider which models this key can actually use (names get retired often).
+  const loadModels = (prov, { quiet = false } = {}) => run(`models:${prov}`, async () => {
+    const list = await listModels(prov, keys[prov]);
+    setModels(m => ({ ...m, [prov]: list }));
+    const changes = [];
+    if (settings.text.provider === prov && list.text.length && !list.text.includes(settings.text.model.trim())) {
+      const pick = pickDefault(prov, 'text', list.text);
+      setText({ model: pick });
+      changes.push(`writing model → ${pick}`);
+    }
+    if ((prov === 'gemini' || prov === 'openai') && list.image.length && !list.image.includes(String(settings.image[prov].model).trim())) {
+      const pick = pickDefault(prov, 'image', list.image);
+      setImgP(prov, { model: pick });
+      changes.push(`image model → ${pick}`);
+    }
+    if (changes.length) notify(`Your saved ${prov} model isn't available to this key, so I switched: ${changes.join(', ')}.`);
+    else if (!quiet) notify(`${prov}: ${list.text.length} writing and ${list.image.length} image models available to your key.`);
+  });
+
+  // Check the models in use as soon as there's a key for them.
+  useEffect(() => {
+    const provs = new Set([settings.text.provider, settings.image.provider].filter(p => ['gemini', 'openai', 'anthropic'].includes(p) && keys[p]));
+    provs.forEach(p => { if (!models[p]) loadModels(p, { quiet: true }); });
+  }, [settings.text.provider, settings.image.provider, keys.gemini, keys.openai, keys.anthropic]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const ModelButton = ({ prov }) => (busy[`models:${prov}`] ? <Spinner /> : (
+    <button className="btn btn-sm" onClick={() => loadModels(prov)} disabled={!keys[prov]} title={keys[prov] ? 'Fetch the list of models your key can use' : 'Add the API key first'}>Load my models</button>
+  ));
 
   const loadCkpts = () => run('ckpts', async () => {
     const list = await comfyCheckpoints(comfy.url);
@@ -96,9 +140,12 @@ export default function SettingsPanel({ settings, setSettings, keys, imageSettin
               {Object.entries(TEXT_PROVIDERS).map(([k, p]) => <option key={k} value={k}>{p.label}</option>)}
             </select>
           </Field>
-          <Field label="Model" hint="Type any model id">
-            <input type="text" list="kb-text-models" value={settings.text.model} onChange={e => setText({ model: e.target.value })} />
-            <datalist id="kb-text-models">{TEXT_PROVIDERS[settings.text.provider].models.map(m => <option key={m} value={m} />)}</datalist>
+          <Field label="Model" hint={models[settings.text.provider] ? `${models[settings.text.provider].text.length} models available to your key — type or pick` : 'Type any model id, or load the list your key can use'}>
+            <div className="flex-row" style={{ flexWrap: 'nowrap' }}>
+              <input type="text" list="kb-text-models" value={settings.text.model} onChange={e => setText({ model: e.target.value })} />
+              <ModelButton prov={settings.text.provider} />
+            </div>
+            <datalist id="kb-text-models">{(models[settings.text.provider]?.text || TEXT_PROVIDERS[settings.text.provider].models).map(m => <option key={m} value={m} />)}</datalist>
           </Field>
         </div>
       </div>
@@ -122,17 +169,23 @@ export default function SettingsPanel({ settings, setSettings, keys, imageSettin
         </div>
 
         {settings.image.provider === 'gemini' && (
-          <Field label="Gemini image model" hint={keys.gemini ? '' : 'Needs a Gemini API key (above).'}>
-            <input type="text" list="kb-gem-models" value={settings.image.gemini.model} onChange={e => setImgP('gemini', { model: e.target.value })} />
-            <datalist id="kb-gem-models">{IMAGE_PROVIDERS.gemini.models.map(m => <option key={m} value={m} />)}</datalist>
+          <Field label="Gemini image model" hint={keys.gemini ? (models.gemini ? `${models.gemini.image.length} image models available to your key` : '') : 'Needs a Gemini API key (above).'}>
+            <div className="flex-row" style={{ flexWrap: 'nowrap' }}>
+              <input type="text" list="kb-gem-models" value={settings.image.gemini.model} onChange={e => setImgP('gemini', { model: e.target.value })} />
+              <ModelButton prov="gemini" />
+            </div>
+            <datalist id="kb-gem-models">{(models.gemini?.image || IMAGE_PROVIDERS.gemini.models).map(m => <option key={m} value={m} />)}</datalist>
           </Field>
         )}
 
         {settings.image.provider === 'openai' && (
           <div className="kb-row">
-            <Field label="OpenAI image model" hint={keys.openai ? '' : 'Needs an OpenAI API key (above).'}>
-              <input type="text" list="kb-oai-models" value={settings.image.openai.model} onChange={e => setImgP('openai', { model: e.target.value })} />
-              <datalist id="kb-oai-models">{IMAGE_PROVIDERS.openai.models.map(m => <option key={m} value={m} />)}</datalist>
+            <Field label="OpenAI image model" hint={keys.openai ? (models.openai ? `${models.openai.image.length} image models available to your key` : '') : 'Needs an OpenAI API key (above).'}>
+              <div className="flex-row" style={{ flexWrap: 'nowrap' }}>
+                <input type="text" list="kb-oai-models" value={settings.image.openai.model} onChange={e => setImgP('openai', { model: e.target.value })} />
+                <ModelButton prov="openai" />
+              </div>
+              <datalist id="kb-oai-models">{(models.openai?.image || IMAGE_PROVIDERS.openai.models).map(m => <option key={m} value={m} />)}</datalist>
             </Field>
             <Field label="Quality">
               <select value={settings.image.openai.quality} onChange={e => setImgP('openai', { quality: e.target.value })}>
@@ -179,7 +232,8 @@ export default function SettingsPanel({ settings, setSettings, keys, imageSettin
 
         <div className="flex-row mt-md">
           {busy.testImg ? <Spinner text="Generating test image…" /> : <button className="btn btn-sm" onClick={testImage}>Test image generator</button>}
-          {testImg && <Img store={store} id={testImg} className="kb-slot-img" />}
+          {testImg && <Img store={store} id={testImg} className="kb-slot-img" onClick={() => setLightbox(testImg)} title="Click to view large" />}
+          {lightbox && <Lightbox store={store} id={lightbox} onClose={() => setLightbox(null)} />}
         </div>
       </div>
 
