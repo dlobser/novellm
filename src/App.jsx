@@ -1,9 +1,12 @@
-import React, { useState, useCallback, useRef, useEffect } from 'react';
+import React, { useState, useCallback, useRef, useEffect, Suspense, lazy } from 'react';
 import SetupTab from './tabs/SetupTab.jsx';
 import OutlineTab from './tabs/OutlineTab.jsx';
 import ChaptersTab from './tabs/ChaptersTab.jsx';
 import FullBookTab from './tabs/FullBookTab.jsx';
 import PublishTab from './tabs/PublishTab.jsx';
+
+// Kids Book Studio is self-contained and loaded on demand (keeps the novel pages unchanged).
+const KidsBookStudio = lazy(() => import('./kids/KidsBookStudio.jsx'));
 
 const DEFAULT_PROJECT = {
   title: '',
@@ -181,7 +184,7 @@ export default function App() {
     return callAPI(messages, systemPrompt);
   }, [callAPI]);
 
-  const tabs = ['Setup', 'Outline', 'Chapters', 'Full Book', 'Publish'];
+  const tabs = ['Setup', 'Outline', 'Chapters', 'Full Book', 'Publish', 'Kids Book'];
 
   return (
     <div className="app-container">
@@ -319,6 +322,11 @@ export default function App() {
           outline={outline}
           chapters={chapters}
         />
+      )}
+      {tab === 5 && (
+        <Suspense fallback={<div className="text-muted">Loading Kids Book Studio…</div>}>
+          <KidsBookStudio mainKeys={{ anthropic: apiKey, openai: openaiKey }} />
+        </Suspense>
       )}
     </div>
   );

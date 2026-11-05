@@ -3,7 +3,7 @@ import react from '@vitejs/plugin-react'
 
 export default defineConfig({
   plugins: [react()],
-  base: '/Novel/',  // GitHub repo name — change if your repo is named differently
+  base: '/',  // served from the custom domain theaibookgenerator.com (see public/CNAME)
   server: {
     port: 3000,
     open: true

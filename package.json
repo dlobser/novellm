@@ -7,15 +7,19 @@
     "dev": "npx vite",
     "build": "npx vite build",
     "preview": "npx vite preview",
-    "deploy": "npx vite build && npx gh-pages -d dist"
+    "deploy": "npx vite build && npx gh-pages -d dist",
+    "kids-mcp": "node mcp/server.mjs --http-only"
   },
   "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.32.2",
     "file-saver": "^2.0.5",
+    "jimp": "^1.6.1",
     "jspdf": "^2.5.1",
     "react": "^18.2.0",
-    "react-dom": "^18.2.0"
+    "react-dom": "^18.2.0",
+    "zod": "^3.25.76"
   },
-  "homepage": "https://yourusername.github.io/Novel/",
+  "homepage": "https://theaibookgenerator.com",
   "devDependencies": {
     "@types/react": "^18.2.43",
     "@types/react-dom": "^18.2.17",
