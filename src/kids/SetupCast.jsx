@@ -177,8 +177,8 @@ export function CastPanel({ book, update, store, ai, run, busy, setTab, notify, 
     updateMember(m.id, c => ({ ...c, sheets: [...c.sheets, id], activeSheet: id }));
   });
 
-  const genAllMissing = () => run('allSheets', async () => {
-    for (const m of book.cast.filter(c => !c.sheets.length && (c.description || c.refs.length))) {
+  const genAllMissing = (all = false) => run('allSheets', async () => {
+    for (const m of book.cast.filter(c => (all || !c.sheets.length) && (c.description || c.refs.length))) {
       await genSheet(m);
     }
   });
@@ -207,7 +207,10 @@ export function CastPanel({ book, update, store, ai, run, busy, setTab, notify, 
         <div className="flex-row">
           <Check checked={settings.useRefs} onChange={v => setSettings(s => ({ ...s, useRefs: v }))}>Use sheets as references for pages</Check>
           {busy.allSheets ? <Spinner text="Generating sheets…" /> : (
-            <button className="btn btn-sm btn-accent" onClick={genAllMissing} disabled={!book.cast.some(c => !c.sheets.length)}>Generate all missing sheets ({ai.imageProvider})</button>
+            <>
+              <button className="btn btn-sm btn-accent" onClick={() => genAllMissing(false)} disabled={!book.cast.some(c => !c.sheets.length)}>Generate all missing sheets ({ai.imageProvider})</button>
+              <button className="btn btn-sm" onClick={() => confirm(`Redraw all ${book.cast.length} sheets with ${ai.imageProvider}? Old sheets are kept.`) && genAllMissing(true)} disabled={!book.cast.length}>↻ Redo all sheets</button>
+            </>
           )}
         </div>
       </div>

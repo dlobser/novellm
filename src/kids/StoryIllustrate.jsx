@@ -235,11 +235,12 @@ export function IllustratePanel({ book, update, store, ai, run, busy, setTab, se
     update(bk => ({ ...bk, cover: { ...bk.cover, imageId: id, altImages: [...(bk.cover.altImages || []), id] } }));
   });
 
-  const genMissing = () => run('allImages', async () => {
+  // all=true redoes every picture (e.g. to replace placeholders once a real generator is set up).
+  const genMissing = (all = false) => run('allImages', async () => {
     cancel.current = false;
     const todo = [];
-    if (!bookRef.current.cover.imageId) todo.push({ cover: true });
-    plan.pages.filter(p => p.kind === 'story' && !p.page.imageId && p.page.layout !== 'text-only').forEach(p => todo.push({ id: p.page.id, n: p.n }));
+    if (all || !bookRef.current.cover.imageId) todo.push({ cover: true });
+    plan.pages.filter(p => p.kind === 'story' && (all || !p.page.imageId) && p.page.layout !== 'text-only').forEach(p => todo.push({ id: p.page.id, n: p.n }));
     for (let i = 0; i < todo.length; i++) {
       if (cancel.current) break;
       setProgress(`${i + 1} / ${todo.length}`);
@@ -265,7 +266,10 @@ export function IllustratePanel({ book, update, store, ai, run, busy, setTab, se
               <button className="btn btn-sm btn-danger" onClick={() => { cancel.current = true; }}>Stop after this one</button>
             </>
           ) : (
-            <button className="btn btn-accent" onClick={genMissing} disabled={!missing}>✨ Illustrate all missing ({missing})</button>
+            <>
+              <button className="btn btn-accent" onClick={() => genMissing(false)} disabled={!missing}>✨ Illustrate all missing ({missing})</button>
+              <button className="btn" onClick={() => confirm(`Redraw the cover and all ${storyEntries.length} story pictures with ${ai.imageProvider}? Old versions stay in each page's history.`) && genMissing(true)}>↻ Redo all pictures</button>
+            </>
           )}
         </div>
       </div>
