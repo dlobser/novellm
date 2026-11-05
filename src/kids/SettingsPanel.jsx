@@ -240,11 +240,11 @@ export default function SettingsPanel({ settings, setSettings, keys, imageSettin
           </div>
         )}
 
-        <details className="mt-md">
+        <details className="mt-md" open={!health || !!health.error}>
           <summary>Setup instructions</summary>
           <ol className="kb-steps">
-            <li>In the project folder run <code>npm install</code> once.</li>
-            <li><b>Claude Desktop:</b> Settings → Developer → Edit Config, add this to <code>claude_desktop_config.json</code>, then restart Claude:
+            <li>Get the project code (<code>git clone https://github.com/dlobser/novellm</code>) and run <code>npm install</code> in that folder once. The MCP server runs on your computer — this website just connects to it.</li>
+            <li><b>Claude Desktop:</b> Settings → Developer → Edit Config, add this to <code>claude_desktop_config.json</code>{health && !health.error ? '' : <> (change the path to <code>mcp\server.mjs</code> inside your copy of the project)</>}, then restart Claude:
               <pre className="kb-pre">{claudeConfig}</pre>
               Claude starts the server itself, and the bridge for this page comes up with it. Try: “Create a kids book about a hedgehog who is scared of the dark, 16 pages, and write the story.”
             </li>
