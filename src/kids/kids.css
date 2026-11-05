@@ -108,6 +108,8 @@
 .kb-color input[type="color"] { width: 40px; height: 36px; padding: 2px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--bg-tertiary); cursor: pointer; flex: none; }
 .kb-color input[type="text"] { font-family: var(--font-mono); font-size: 0.78rem; padding: 8px; }
 .kb-slot-img { width: 64px; height: 64px; cursor: zoom-in; }
+.kb-subcard { background: var(--bg-tertiary); padding: 10px 12px; }
+.kb-subcard strong { font-size: 0.85rem; }
 .kb-matter { display: flex; flex-direction: column; gap: 6px; padding: 10px; margin-bottom: 8px; background: var(--bg-tertiary); border: 1px solid var(--border); border-radius: var(--radius); }
 .kb-matter select { padding: 6px 10px; font-size: 0.82rem; }
 

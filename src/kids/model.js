@@ -69,6 +69,7 @@ export function newPage(p = {}) {
     illustration: '',
     cast: [],
     layout: 'image-top',
+    split: null,
     imageId: null,
     altImages: [],
     ...p,
@@ -127,7 +128,7 @@ export function newBook(overrides = {}) {
       newMatter('copyright', { text: `Text © ${year} [Author]\nIllustrations © ${year}\nAll rights reserved.\n\nFor [someone special]` }),
     ],
     backMatter: [newMatter('about-author', { text: '' })],
-    cover: { layout: 'full-title-top', imageId: null, altImages: [], prompt: '', bgColor: '#fff4dc', titleColor: '#ffffff', titleStroke: '#2b2b4a' },
+    cover: { layout: 'full-title-top', imageId: null, altImages: [], prompt: '', bgColor: '#fff4dc', titleColor: '#ffffff', titleStroke: '#2b2b4a', titleSize: 46, titleY: null, titleWidth: 100, titleAlign: 'center', titleLineHeight: 1.02, titleStrokeWidth: 0.045, subtitleSize: null, bylineSize: 15, bylinePos: 'bottom' },
     backCover: { layout: 'blurb-center', blurb: '', tagline: '', imageId: null, bgColor: '#fff4dc', showAge: true, showBarcodeBox: false },
     design: {
       titleFont: 'Fredoka',
@@ -143,6 +144,8 @@ export function newBook(overrides = {}) {
       pageNumbers: true,
       overlayBox: 'soft',
       autoFit: true,
+      pageMode: 'together',
+      splitOrder: 'words-first',
     },
     print: { flip: 'short', reverseBacks: false, foldMarks: false, sheetLabels: false },
     updatedAt: Date.now(),
@@ -187,12 +190,12 @@ export function normalizeBook(b) {
   }));
   book.frontMatter = (book.frontMatter || []).map(m => newMatter(m.type || 'note', m));
   book.backMatter = (book.backMatter || []).map(m => newMatter(m.type || 'note', m));
-  book.cover = { layout: 'full-title-top', imageId: null, altImages: [], prompt: '', bgColor: '#fff4dc', titleColor: '#ffffff', titleStroke: '#2b2b4a', ...(base.cover || {}) };
+  book.cover = { layout: 'full-title-top', imageId: null, altImages: [], prompt: '', bgColor: '#fff4dc', titleColor: '#ffffff', titleStroke: '#2b2b4a', titleSize: 46, titleY: null, titleWidth: 100, titleAlign: 'center', titleLineHeight: 1.02, titleStrokeWidth: 0.045, subtitleSize: null, bylineSize: 15, bylinePos: 'bottom', ...(base.cover || {}) };
   book.backCover = { layout: 'blurb-center', blurb: '', tagline: '', imageId: null, bgColor: '#fff4dc', showAge: true, showBarcodeBox: false, ...(base.backCover || {}) };
   book.design = {
     titleFont: 'Fredoka', bodyFont: 'Andika', bodySize: 17, lineHeight: 1.45, align: 'center',
     textColor: '#2b2b3a', accentColor: '#e0663d', pageBg: '#fffdf7', safeMargin: 0.35, bleed: true,
-    pageNumbers: true, overlayBox: 'soft', autoFit: true, ...d,
+    pageNumbers: true, overlayBox: 'soft', autoFit: true, pageMode: 'together', splitOrder: 'words-first', ...d,
   };
   book.print = { flip: 'short', reverseBacks: false, foldMarks: false, sheetLabels: false, ...(base.print || {}) };
   if (!PAGE_COUNTS.includes(book.pageCount)) book.pageCount = roundUpTo4(book.pageCount || 16);
@@ -221,32 +224,78 @@ export function storySlots(book) {
 }
 
 // Map every physical page (1..N) to what goes on it.
+// Does this story page put its picture and its words on two separate (facing) pages?
+// page.split: true / false overrides the book-wide design.pageMode ('together' | 'split').
+export function isSplit(book, page) {
+  if (page.split === true || page.split === false) return page.split;
+  return book.design.pageMode === 'split' && page.layout !== 'text-only' && page.layout !== 'image-only';
+}
+
+// Printed pages one story page uses.
+export function pageWeight(book, page) {
+  return isSplit(book, page) ? 2 : 1;
+}
+
+// Aspect ratio to request for a story page's picture.
+export function pageAspect(book, page) {
+  if (isSplit(book, page)) return '2:3';
+  return STORY_LAYOUTS[page.layout]?.aspect || '1:1';
+}
+
+// How many story pages fit, assuming every page follows the book-wide setting.
+export function storyCapacity(book) {
+  const slots = Math.max(0, storySlots(book));
+  return book.design.pageMode === 'split' ? Math.floor(slots / 2) : slots;
+}
+
 export function computePlan(book) {
   const N = book.pageCount;
   const warnings = [];
   const slots = storySlots(book);
   const story = storyPages(book);
   const pages = [];
+  const wordsFirst = book.design.splitOrder !== 'picture-first';
 
   pages.push({ kind: 'cover' });
   book.frontMatter.forEach((m, i) => pages.push({ kind: 'front', matter: m, index: i }));
 
   const usable = Math.max(0, slots);
-  story.slice(0, usable).forEach((s, i) => pages.push({ kind: 'story', storyIndex: i, ...s }));
-  for (let i = story.length; i < usable; i++) pages.push({ kind: 'filler' });
+  let used = 0;
+  let placed = 0;
+  const notFacing = [];
+  for (let i = 0; i < story.length; i++) {
+    const s = story[i];
+    const w = pageWeight(book, s.page);
+    if (used + w > usable) break;
+    if (w === 2) {
+      const first = pages.length + 1;
+      if (first % 2 === 1) notFacing.push(i + 1);
+      const parts = wordsFirst ? ['words', 'picture'] : ['picture', 'words'];
+      parts.forEach(part => pages.push({ kind: 'story', ...s, storyIndex: i, part }));
+    } else {
+      pages.push({ kind: 'story', storyIndex: i, ...s });
+    }
+    used += w;
+    placed++;
+  }
+  for (let i = used; i < usable; i++) pages.push({ kind: 'filler' });
 
   book.backMatter.forEach((m, i) => pages.push({ kind: 'back', matter: m, index: i }));
   pages.push({ kind: 'back-cover' });
 
+  const needed = story.reduce((a, s) => a + pageWeight(book, s.page), 0);
+  const fixed = N - slots;
   if (slots < 0) {
-    warnings.push(`Front + back matter need ${N - slots - 2} pages but the book only has ${N}. Remove matter pages or raise the page count.`);
+    warnings.push(`Front + back matter need ${fixed - 2} pages but the book only has ${N}. Remove matter pages or raise the page count.`);
   }
-  if (story.length > usable) {
-    const need = roundUpTo4(story.length + N - slots);
-    warnings.push(`The story has ${story.length} pages but only ${usable} story slots fit in ${N} pages — ${story.length - usable} won't print. Use ${need} pages, trim the story, or remove matter pages.`);
+  if (placed < story.length) {
+    warnings.push(`The story needs ${needed} printed pages but only ${usable} fit in ${N} pages, so ${story.length - placed} story page(s) won't print. Use ${roundUpTo4(needed + fixed)} pages, trim the story, or remove matter pages.`);
   }
-  if (story.length > 0 && story.length < usable) {
-    warnings.push(`${usable - story.length} story slot(s) are empty and will print blank. Add story pages, add back matter, or lower the page count.`);
+  if (story.length > 0 && used < usable && placed === story.length) {
+    warnings.push(`${usable - used} printed page(s) are empty and will print blank. Add story pages, add back matter, or lower the page count.`);
+  }
+  if (notFacing.length) {
+    warnings.push(`Story page${notFacing.length > 1 ? 's' : ''} ${notFacing.join(', ')}: the picture and words start on a right-hand page, so they won't face each other. Add or remove one front-matter page, or switch one page before ${notFacing.length > 1 ? 'them' : 'it'} to together/separate.`);
   }
 
   // Trim/pad to exactly N (only matters when slots < 0).
@@ -256,10 +305,22 @@ export function computePlan(book) {
   // Chapter start pages for a contents page.
   const chapterStarts = {};
   pages.forEach(p => {
-    if (p.kind === 'story' && p.isChapterStart) chapterStarts[p.chapterIdx] = p.n;
+    if (p.kind === 'story' && p.isChapterStart && chapterStarts[p.chapterIdx] === undefined) chapterStarts[p.chapterIdx] = p.n;
   });
 
-  return { pages, slots: usable, storyCount: story.length, warnings, chapterStarts, suggestedPageCount: roundUpTo4(story.length + N - slots) };
+  // First printed page of each story page (by page id), and the full range for split pages.
+  const pageNumbers = {};
+  pages.forEach(p => {
+    if (p.kind !== 'story') return;
+    const r = pageNumbers[p.page.id];
+    pageNumbers[p.page.id] = r ? { ...r, last: p.n } : { first: p.n, last: p.n, picture: null };
+    if (p.part !== 'words') pageNumbers[p.page.id].picture = p.n;
+  });
+
+  return {
+    pages, slots: usable, used, capacity: storyCapacity(book), storyCount: story.length, placed,
+    warnings, chapterStarts, pageNumbers, suggestedPageCount: roundUpTo4(needed + fixed),
+  };
 }
 
 // Saddle-stitch imposition. Sheet 1 is the outermost sheet.
@@ -338,8 +399,10 @@ export function bookSummary(book) {
     author: book.author,
     ageRange: book.ageRange,
     pageCount: book.pageCount,
-    storySlots: plan.slots,
+    storyPagesFit: plan.capacity,
     storyPagesWritten: plan.storyCount,
+    printedStoryPages: `${plan.used} of ${plan.slots}`,
+    pageMode: book.design.pageMode,
     chapterMode: book.chapterMode,
     warnings: plan.warnings,
   };

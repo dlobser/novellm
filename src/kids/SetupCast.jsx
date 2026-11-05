@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { AGE_RANGES, ART_STYLES, PAGE_COUNTS, PAPER, CAST_KINDS, newCastMember, storySlots } from './model.js';
+import { AGE_RANGES, ART_STYLES, PAGE_COUNTS, PAPER, CAST_KINDS, newCastMember, storySlots, storyCapacity } from './model.js';
 import { analyzeImagePrompt, castFromPremisePrompt, sheetPrompt, sheetRefs } from './prompts.js';
 import { Field, LazyText, Thumbs, UploadButton, DropZone, Spinner, Lightbox, Check } from './ui.jsx';
 
@@ -17,8 +17,8 @@ export function PageCountPicker({ book, update }) {
           {PAGE_COUNTS.map(n => <option key={n} value={n}>{n} pages</option>)}
         </select>
       </Field>
-      <Field label="Story pages available" hint={`= ${book.pageCount} − front cover − back cover − ${book.frontMatter.length} front − ${book.backMatter.length} back matter`}>
-        <div className={`kb-stat ${slots < 1 ? 'bad' : ''}`}>{slots}</div>
+      <Field label="Story pages available" hint={`${slots} printed pages = ${book.pageCount} − 2 covers − ${book.frontMatter.length} front − ${book.backMatter.length} back${book.design.pageMode === 'split' ? '; each story page uses 2 (picture + words)' : ''}`}>
+        <div className={`kb-stat ${slots < 1 ? 'bad' : ''}`}>{storyCapacity(book)}</div>
       </Field>
     </div>
   );

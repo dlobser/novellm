@@ -3,7 +3,8 @@ import {
   COVER_LAYOUTS, BACK_COVER_LAYOUTS, MATTER_TYPES, STORY_LAYOUTS, PAPER, newMatter, imposition, allImageIds,
 } from './model.js';
 import { blurbPrompt, matterImagePrompt, coverRefs } from './prompts.js';
-import { renderBookHTML, printInstructions } from './layout.js';
+import { renderBookHTML, printInstructions, COVER_TITLE_DEFAULT_Y } from './layout.js';
+import { exportPdf, printPagesInOrder } from './exporters.js';
 import { KID_FONTS, fontCssUrl, fontStack } from './fonts.js';
 import { Field, LazyText, UploadButton, Spinner, Check, Img, Lightbox } from './ui.jsx';
 import { PageCountPicker } from './SetupCast.jsx';
@@ -184,7 +185,14 @@ function MatterList({ which, book, update, store, ai, run, busy }) {
           </div>
           {hasTitle(m.type) && <LazyText value={m.title} onCommit={v => set(m.id, { title: v })} placeholder="Heading" />}
           {hasText(m.type) && <LazyText multiline rows={m.type === 'copyright' ? 4 : 3} value={m.text} onCommit={v => set(m.id, { text: v })} placeholder={m.type === 'about-author' ? 'A few friendly sentences about you…' : 'Text…'} />}
-          {m.type === 'title' && <div className="text-muted">Uses the book title, subtitle, author and illustrator.</div>}
+          {m.type === 'title' && (
+            <>
+              <div className="text-muted">Uses the book title, subtitle, author and illustrator.</div>
+              <Field label={`Title size: ${m.titleSize || (m.imageId ? 34 : 40)}pt`}>
+                <input type="range" min={14} max={80} step={1} value={m.titleSize || (m.imageId ? 34 : 40)} onChange={e => set(m.id, { titleSize: Number(e.target.value) })} />
+              </Field>
+            </>
+          )}
           {m.type === 'contents' && <div className="text-muted">Lists chapters with page numbers automatically.</div>}
           {hasImage(m.type) && (
             <ImageSlot store={store} id={m.imageId} busy={busy} busyKey={`matter:${m.id}`}
@@ -290,6 +298,20 @@ export function DesignPanel({ book, update, store, ai, run, busy, plan }) {
                 <input type="range" min={0.2} max={0.75} step={0.05} value={d.safeMargin} onChange={e => setD({ safeMargin: Number(e.target.value) })} />
               </Field>
             </div>
+            <Field label="Words & pictures" hint="Separate puts each picture on its own page with the words on the facing page. Each story page then uses 2 printed pages. Override single pages on the Story tab.">
+              <div className="kb-seg">
+                <button className={d.pageMode !== 'split' ? 'on' : ''} onClick={() => setD({ pageMode: 'together' })}>Together on one page</button>
+                <button className={d.pageMode === 'split' ? 'on' : ''} onClick={() => setD({ pageMode: 'split' })}>Separate facing pages</button>
+              </div>
+            </Field>
+            {d.pageMode === 'split' && (
+              <Field label="Which side">
+                <div className="kb-seg">
+                  <button className={d.splitOrder !== 'picture-first' ? 'on' : ''} onClick={() => setD({ splitOrder: 'words-first' })}>Words left, picture right</button>
+                  <button className={d.splitOrder === 'picture-first' ? 'on' : ''} onClick={() => setD({ splitOrder: 'picture-first' })}>Picture left, words right</button>
+                </div>
+              </Field>
+            )}
             <div className="flex-row">
               <Check checked={d.bleed} onChange={v => setD({ bleed: v })}>Pictures run to the page edge</Check>
               <Check checked={d.pageNumbers} onChange={v => setD({ pageNumbers: v })}>Page numbers</Check>
@@ -315,6 +337,51 @@ export function DesignPanel({ book, update, store, ai, run, busy, plan }) {
               <ColorField label="Background" value={book.cover.bgColor} onChange={v => setCover({ bgColor: v })} />
             </div>
             <Check checked={!book.cover.titleStroke} onChange={v => setCover({ titleStroke: v ? '' : '#2b2b4a' })}>No title outline</Check>
+            <div className="kb-card kb-subcard">
+              <strong>Title text</strong>
+              <div className="kb-row">
+                <Field label={`Size: ${book.cover.titleSize || 46}pt`} hint="Shrinks automatically only if it doesn't fit">
+                  <input type="range" min={18} max={110} step={1} value={book.cover.titleSize || 46} onChange={e => setCover({ titleSize: Number(e.target.value) })} />
+                </Field>
+                <Field label={`Height on page: ${Math.round(book.cover.titleY ?? COVER_TITLE_DEFAULT_Y[book.cover.layout] ?? 20)}%`} hint="0% = top edge, 100% = bottom edge">
+                  <input type="range" min={4} max={96} step={1} value={book.cover.titleY ?? COVER_TITLE_DEFAULT_Y[book.cover.layout] ?? 20} onChange={e => setCover({ titleY: Number(e.target.value) })} />
+                </Field>
+              </div>
+              <div className="kb-row">
+                <Field label={`Width: ${book.cover.titleWidth || 100}%`} hint="Narrower makes the title wrap onto more lines">
+                  <input type="range" min={30} max={100} step={1} value={book.cover.titleWidth || 100} onChange={e => setCover({ titleWidth: Number(e.target.value) })} />
+                </Field>
+                <Field label={`Line spacing: ${book.cover.titleLineHeight || 1.02}`}>
+                  <input type="range" min={0.8} max={1.6} step={0.02} value={book.cover.titleLineHeight || 1.02} onChange={e => setCover({ titleLineHeight: Number(e.target.value) })} />
+                </Field>
+              </div>
+              <div className="kb-row">
+                <Field label="Align">
+                  <div className="kb-seg">
+                    {['left', 'center', 'right'].map(a => <button key={a} className={(book.cover.titleAlign || 'center') === a ? 'on' : ''} onClick={() => setCover({ titleAlign: a })}>{a}</button>)}
+                  </div>
+                </Field>
+                <Field label={`Outline thickness: ${Math.round((book.cover.titleStrokeWidth ?? 0.045) * 1000) / 10}%`}>
+                  <input type="range" min={0} max={0.12} step={0.005} value={book.cover.titleStrokeWidth ?? 0.045} onChange={e => setCover({ titleStrokeWidth: Number(e.target.value) })} />
+                </Field>
+              </div>
+              <div className="kb-row">
+                <Field label={`Subtitle size: ${book.cover.subtitleSize ? `${book.cover.subtitleSize}pt` : 'auto'}`}>
+                  <input type="range" min={8} max={48} step={1} value={book.cover.subtitleSize || Math.round((book.cover.titleSize || 46) * 0.42)} onChange={e => setCover({ subtitleSize: Number(e.target.value) })} />
+                </Field>
+                <Field label={`Author line size: ${book.cover.bylineSize || 15}pt`}>
+                  <input type="range" min={8} max={36} step={1} value={book.cover.bylineSize || 15} onChange={e => setCover({ bylineSize: Number(e.target.value) })} />
+                </Field>
+              </div>
+              <Field label="Author line position">
+                <div className="kb-seg">
+                  {[['bottom', 'Bottom of cover'], ['under-title', 'Under the title'], ['top', 'Top of cover']].map(([k, l]) => (
+                    <button key={k} className={(book.cover.bylinePos || 'bottom') === k ? 'on' : ''} onClick={() => setCover({ bylinePos: k })}>{l}</button>
+                  ))}
+                </div>
+              </Field>
+              <button className="btn btn-sm" onClick={() => setCover({ titleSize: 46, titleY: null, titleWidth: 100, titleAlign: 'center', titleLineHeight: 1.02, titleStrokeWidth: 0.045, subtitleSize: null, bylineSize: 15, bylinePos: 'bottom' })}>Reset title layout</button>
+            </div>
             <ImageSlot store={store} id={book.cover.imageId} busy={busy} label="Cover picture (generate it on the Illustrations tab)"
               onSet={id => setCover({ imageId: id, altImages: [...(book.cover.altImages || []), id] })} onClear={() => setCover({ imageId: null })} />
           </>
@@ -377,11 +444,23 @@ export function PrintPanel({ book, update, store, run, busy, plan, download }) {
     if (!p) return '';
     if (p.kind === 'cover') return 'Front cover';
     if (p.kind === 'back-cover') return 'Back cover';
-    if (p.kind === 'story') return `Story ${p.storyIndex + 1}`;
+    if (p.kind === 'story') return `Story ${p.storyIndex + 1}${p.part ? ` (${p.part})` : ''}`;
     if (p.kind === 'filler') return 'Empty';
     return MATTER_TYPES[p.matter.type] || p.matter.type;
   };
   const doPrint = sides => run(`print:${sides}`, () => printBook(book, store, sides));
+  const [pdfDpi, setPdfDpi] = useState(300);
+  const [pdfStatus, setPdfStatus] = useState('');
+  const downloadPdf = () => run('pdf', async () => {
+    try {
+      const { blob, name, pages } = await exportPdf(book, store, { dpi: pdfDpi, onProgress: setPdfStatus });
+      download(name, blob);
+      setPdfStatus(`Saved ${name} (${pages} pages, ${(blob.size / 1048576).toFixed(1)} MB).`);
+    } catch (e) {
+      setPdfStatus('');
+      throw e;
+    }
+  });
   const downloadHtml = () => run('dlhtml', async () => {
     const urls = await resolveUrls(book, store, true);
     const html = renderBookHTML(book, { mode: 'imposed', imageUrl: id => urls[id], sides: 'both', title: `${book.title} — print booklet` });
@@ -394,7 +473,7 @@ export function PrintPanel({ book, update, store, run, busy, plan, download }) {
       <div className="kb-print-grid">
         <div>
           <div className="kb-card">
-            <h3>Booklet</h3>
+            <h3>Folded booklet (two-sided)</h3>
             <PageCountPicker book={book} update={update} />
             {plan.warnings.map(w => <div key={w} className="kb-warn">{w}</div>)}
             {missingImgs > 0 && <div className="kb-warn">{missingImgs} story page(s) have no picture yet.</div>}
@@ -423,6 +502,23 @@ export function PrintPanel({ book, update, store, run, busy, plan, download }) {
               {busy.dlhtml ? <Spinner text="Packing images…" /> : <button className="btn btn-sm" onClick={downloadHtml}>⬇ Download print file (.html, open &amp; print anytime)</button>}
             </div>
             <p className="text-muted mt-sm">Want a PDF? Click Print and pick “Save as PDF” as the printer (landscape, margins none, background graphics on).</p>
+          </div>
+
+          <div className="kb-card">
+            <h3>PDF, pages in order</h3>
+            <p className="text-muted">One page per PDF page (5.5 × 8.5 in), cover first. For sharing, ebook-style reading, or a print shop.</p>
+            <div className="flex-row">
+              {busy.pdf ? <Spinner text={pdfStatus || 'Making PDF…'} /> : <button className="btn btn-accent" onClick={downloadPdf}>⬇ Download PDF</button>}
+              <select value={pdfDpi} onChange={e => setPdfDpi(Number(e.target.value))} style={{ width: 'auto' }} disabled={busy.pdf}>
+                <option value={150}>Smaller file (150 dpi)</option>
+                <option value={300}>Print quality (300 dpi)</option>
+              </select>
+            </div>
+            {!busy.pdf && pdfStatus && <div className="text-muted">{pdfStatus}</div>}
+            <div className="flex-row">
+              {busy.printPages ? <Spinner text="Preparing…" /> : <button className="btn btn-sm" onClick={() => run('printPages', () => printPagesInOrder(book, store))}>Print pages in order</button>}
+              <span className="text-muted">Choose “Save as PDF” there for a sharp, text-selectable PDF.</span>
+            </div>
           </div>
 
           <div className="kb-card">

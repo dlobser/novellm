@@ -1,5 +1,5 @@
 // Prompt builders for kids books. Isomorphic (browser + MCP server).
-import { STORY_LAYOUTS, CAST_KINDS, computePlan, findCast, storySlots } from './model.js';
+import { STORY_LAYOUTS, CAST_KINDS, computePlan, findCast, isSplit, storyCapacity } from './model.js';
 
 const NO_TEXT = 'Do not draw any words, letters, captions, signatures or watermarks in the image.';
 
@@ -29,10 +29,17 @@ export function storySystemPrompt(book) {
   return `You are an award-winning children's picture-book author and art director. You write for ages ${book.ageRange}: concrete, vivid, rhythmic language; short sentences; read-aloud musicality; gentle humor; page turns that create anticipation; a satisfying ending. Every page must be illustratable as a single clear scene.`;
 }
 
-const PAGE_SCHEMA = `{ "text": string (the words printed on the page), "illustration": string (a detailed visual scene description for the illustrator: who is where doing what, expressions, setting, time of day, composition — no dialogue), "cast": string[] (exact names of cast members visible on the page), "layout": one of ${Object.keys(STORY_LAYOUTS).map(k => `"${k}"`).join(', ')} }`;
+const PAGE_SCHEMA = `{ "text": string (the words printed on the page), "illustration": string (a detailed visual scene description for the illustrator: who is where doing what, expressions, setting, time of day, composition — no dialogue, and no art-style words), "cast": string[] (exact names of cast members visible on the page), "layout": one of ${Object.keys(STORY_LAYOUTS).map(k => `"${k}"`).join(', ')} }`;
+
+function layoutGuidance(book) {
+  if (book.design.pageMode === 'split') {
+    return 'Each page\'s picture and words will be printed on separate facing pages (a full-page picture opposite a page of words), so every page needs one strong, clear full-page scene. Use "image-top" as the layout for every page.';
+  }
+  return 'Layout guidance: use "image-top" or "image-bottom" for most pages, "full-text-bottom"/"full-text-top" for big dramatic moments, "image-only" sparingly for wordless beats, and "text-only" rarely.';
+}
 
 export function storyPrompt(book, { slots = null } = {}) {
-  const n = slots ?? storySlots(book);
+  const n = slots ?? storyCapacity(book);
   const chapters = book.chapterMode === 'chapters';
   const structure = chapters
     ? `Split the story into ${book.chapterCount || 3} short chapters, each with a title. The total number of pages across all chapters must be exactly ${n}.`
@@ -43,7 +50,8 @@ ${bookBrief(book)}
 
 ${structure}
 
-Layout guidance: use "image-top" or "image-bottom" for most pages, "full-text-bottom"/"full-text-top" for big dramatic moments, "image-only" sparingly for wordless beats, and "text-only" rarely. Keep each page's text within the word budget so it fits on a 5.5 × 8.5 inch page.
+${layoutGuidance(book)} Keep each page's text within the word budget so it fits on a 5.5 × 8.5 inch page.
+Illustration notes describe only what is in the picture (who, where, doing what, expressions, composition). Don't describe the art style or medium — that is applied separately.
 Use the cast names exactly as given when they appear. You may introduce minor background characters in illustration notes, but keep the main cast consistent.
 
 Return ONLY valid JSON (no markdown fences) of the form:
@@ -51,7 +59,7 @@ Return ONLY valid JSON (no markdown fences) of the form:
 }
 
 export function chapterPlanPrompt(book, { slots = null } = {}) {
-  const n = slots ?? storySlots(book);
+  const n = slots ?? storyCapacity(book);
   return `Plan a children's chapter book.
 
 ${bookBrief(book)}
@@ -66,7 +74,7 @@ export function chapterPagesPrompt(book, chapterIdx) {
   const outline = book.chapters
     .map((c, i) => `Chapter ${i + 1}: ${c.title || '(untitled)'}${i === chapterIdx ? '  <-- WRITE THIS ONE' : ''}\n${c.summary || ''}${c.pages.length && i !== chapterIdx ? `\n(already written: ${c.pages.map(p => p.text).join(' ').slice(0, 600)}…)` : ''}`)
     .join('\n\n');
-  const n = ch.targetPages || Math.max(2, Math.floor(storySlots(book) / book.chapters.length));
+  const n = ch.targetPages || Math.max(2, Math.floor(storyCapacity(book) / book.chapters.length));
   return `Write chapter ${chapterIdx + 1} of a children's book.
 
 ${bookBrief(book)}
@@ -199,7 +207,8 @@ export function pagePrompt(book, page, { pageNumber, extra = '', refs = null } =
   const r = refs || pageRefs(book, page);
   const layout = STORY_LAYOUTS[page.layout] || STORY_LAYOUTS['image-top'];
   let comp = '';
-  if (page.layout === 'full-text-bottom') comp = 'Full-page portrait composition. Keep the bottom third simple and uncluttered (sky, ground, soft background) because a text box will sit there.';
+  if (isSplit(book, page)) comp = 'Full-page portrait illustration, edge to edge. The words are printed on the facing page, so no empty space for text is needed.';
+  else if (page.layout === 'full-text-bottom') comp = 'Full-page portrait composition. Keep the bottom third simple and uncluttered (sky, ground, soft background) because a text box will sit there.';
   else if (page.layout === 'full-text-top') comp = 'Full-page portrait composition. Keep the top third simple and uncluttered because a text box will sit there.';
   else if (page.layout === 'image-only') comp = 'Full-page portrait composition, edge to edge.';
   else comp = `Square vignette composition (${layout.aspect}), subject centered with breathing room around the edges.`;
@@ -281,7 +290,7 @@ export function writingGuide(book) {
   const plan = computePlan(book);
   return `${storySystemPrompt(book)}
 
-${storyPrompt(book, { slots: plan.slots })}
+${storyPrompt(book, { slots: plan.capacity })}
 
 When you have the story, call the write_story tool with the chapters array (each page: text, illustration, cast, layout).`;
 }

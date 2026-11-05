@@ -8,7 +8,8 @@ import { SetupPanel, CastPanel } from './SetupCast.jsx';
 import { StoryPanel, IllustratePanel } from './StoryIllustrate.jsx';
 import { DesignPanel, PrintPanel } from './DesignPrint.jsx';
 import SettingsPanel from './SettingsPanel.jsx';
-import { Spinner } from './ui.jsx';
+import { Spinner, Check } from './ui.jsx';
+import { exportPicturesZip } from './exporters.js';
 
 const SETTINGS_KEY = 'kids_settings';
 export const CLIENT_ID = `web_${Math.random().toString(36).slice(2, 10)}`;
@@ -287,6 +288,13 @@ export default function KidsBookStudio({ mainKeys }) {
     download(`${safeName(book.title)}.kidsbook.json`, json, 'application/json');
   });
 
+  const [zipHistory, setZipHistory] = useState(false);
+  const exportPictures = () => run('zip', async () => {
+    const { blob, name, count } = await exportPicturesZip(book, store, { includeHistory: zipHistory });
+    download(name, blob);
+    notify(`Saved ${count} pictures to ${name}.`);
+  });
+
   const importAction = () => {
     const input = document.createElement('input');
     input.type = 'file';
@@ -344,14 +352,16 @@ export default function KidsBookStudio({ mainKeys }) {
         <div className="kb-top-title">
           <span className="kb-badge">Kids Book Studio</span>
           <strong>{book.title || 'Untitled kids book'}</strong>
-          <span className="text-muted">{book.pageCount} pages · {book.pageCount / 4} sheets · {plan.storyCount}/{plan.slots} story pages</span>
+          <span className="text-muted">{book.pageCount} pages · {book.pageCount / 4} sheets · {plan.storyCount}/{plan.capacity} story pages</span>
         </div>
         <div className="flex-row">
           <span className={`kb-store ${store.kind}`} title={store.label()}>
             {store.kind === 'bridge' ? <>● MCP bridge {bridgeLive ? 'live' : 'offline'}</> : '● Saved in this browser'}
           </span>
           <button className="btn btn-sm" onClick={newBookAction}>New book</button>
-          <button className="btn btn-sm" onClick={exportAction} disabled={busy.export}>{busy.export ? 'Exporting…' : 'Export'}</button>
+          <button className="btn btn-sm" onClick={exportAction} disabled={busy.export} title="Whole book in one .json file, pictures included">{busy.export ? 'Exporting…' : 'Export .json'}</button>
+          <button className="btn btn-sm" onClick={exportPictures} disabled={busy.zip} title="Every picture as an image file, in a .zip">{busy.zip ? 'Zipping…' : 'Pictures .zip'}</button>
+          <Check checked={zipHistory} onChange={setZipHistory}>+ older versions</Check>
           <button className="btn btn-sm" onClick={importAction} disabled={busy.import}>{busy.import ? 'Importing…' : 'Import'}</button>
         </div>
       </div>

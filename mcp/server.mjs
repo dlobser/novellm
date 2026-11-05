@@ -19,7 +19,7 @@ import { Jimp } from 'jimp';
 
 import {
   PAGE_COUNTS, AGE_RANGES, STORY_LAYOUTS, COVER_LAYOUTS, BACK_COVER_LAYOUTS, MATTER_TYPES, CAST_KINDS, PAPER,
-  newCastMember, newMatter, newPage, applyStory, storyPages, computePlan, imposition, findCast, bookSummary, normalizeBook, safeName,
+  newCastMember, newMatter, newPage, applyStory, storyPages, computePlan, pageAspect, isSplit, imposition, findCast, bookSummary, normalizeBook, safeName,
 } from '../src/kids/model.js';
 import { writingGuide, sheetPrompt, sheetRefs, pagePrompt, pageRefs, coverPrompt, coverRefs, matterImagePrompt } from '../src/kids/prompts.js';
 import { generateImage, IMAGE_PROVIDERS } from '../src/kids/imageProviders.js';
@@ -113,8 +113,7 @@ function mapPage(book, pageId, fn) {
 
 function storyOverview(book) {
   const plan = computePlan(book);
-  const phys = {};
-  plan.pages.forEach(p => { if (p.kind === 'story') phys[p.page.id] = p.n; });
+  const nums = plan.pageNumbers;
   return {
     ...bookSummary(book),
     subtitle: book.subtitle,
@@ -132,7 +131,8 @@ function storyOverview(book) {
       summary: ch.summary,
       pages: ch.pages.map(p => ({
         storyPage: storyPages(book).findIndex(s => s.page.id === p.id) + 1,
-        printedPage: phys[p.id] || null,
+        printedPages: nums[p.id] ? (nums[p.id].first === nums[p.id].last ? String(nums[p.id].first) : `${nums[p.id].first}-${nums[p.id].last}`) : null,
+        separatePages: isSplit(book, p),
         text: p.text,
         illustration: p.illustration,
         cast: p.cast,
@@ -247,7 +247,9 @@ function buildServer(transportName) {
     storyPage: z.number().int().min(1),
     text: z.string().optional(), illustration: z.string().optional(),
     cast: z.array(z.string()).optional(), layout: z.enum(Object.keys(STORY_LAYOUTS)).optional(),
-  }, async ({ bookId, storyPage, ...patch }) => {
+    pages: z.enum(['book-setting', 'together', 'separate']).optional().describe('Picture and words on one page, or a picture page facing a words page'),
+  }, async ({ bookId, storyPage, pages, ...patch }) => {
+    if (pages) patch.split = pages === 'separate' ? true : pages === 'together' ? false : null;
     let result;
     await mutate(bookId, writer, b => {
       const s = storyPageAt(b, storyPage);
@@ -396,8 +398,8 @@ function buildServer(transportName) {
     const b = await readBook(await resolveBookId(bookId));
     const s = storyPageAt(b, storyPage);
     const plan = computePlan(b);
-    const n = plan.pages.find(p => p.kind === 'story' && p.page.id === s.page.id)?.n;
-    const g = await generateFor(b, { prompt: pagePrompt(b, s.page, { pageNumber: n, extra: extraDirection || '' }), refs: pageRefs(b, s.page), aspect: STORY_LAYOUTS[s.page.layout]?.aspect || '1:1' });
+    const n = plan.pageNumbers[s.page.id]?.picture;
+    const g = await generateFor(b, { prompt: pagePrompt(b, s.page, { pageNumber: n, extra: extraDirection || '' }), refs: pageRefs(b, s.page), aspect: pageAspect(b, s.page) });
     await mutate(b.id, writer, bk => mapPage(bk, s.page.id, p => ({ ...p, imageId: g.id, altImages: [...(p.altImages || []), g.id] })));
     const content = [{ type: 'text', text: `Story page ${storyPage} (printed page ${n || '—'}) illustrated: ${g.id} via ${g.provider}.` }];
     if (preview) content.push(await thumb(g.buffer, g.mime, 512));
@@ -434,13 +436,14 @@ function buildServer(transportName) {
       done.push('cover');
     }
     const plan = computePlan(b);
-    const todo = plan.pages.filter(p => p.kind === 'story' && !p.page.imageId && p.page.layout !== 'text-only').slice(0, Math.max(0, limit - done.length));
+    const needsPic = p => p.kind === 'story' && p.part !== 'words' && !p.page.imageId && (p.page.layout !== 'text-only' || p.part === 'picture');
+    const todo = plan.pages.filter(needsPic).slice(0, Math.max(0, limit - done.length));
     for (const p of todo) {
-      const g = await generateFor(b, { prompt: pagePrompt(b, p.page, { pageNumber: p.n }), refs: pageRefs(b, p.page), aspect: STORY_LAYOUTS[p.page.layout]?.aspect || '1:1' });
+      const g = await generateFor(b, { prompt: pagePrompt(b, p.page, { pageNumber: p.n }), refs: pageRefs(b, p.page), aspect: pageAspect(b, p.page) });
       b = await mutate(id, writer, bk => mapPage(bk, p.page.id, pg => ({ ...pg, imageId: g.id, altImages: [...(pg.altImages || []), g.id] })));
       done.push(`printed page ${p.n}`);
     }
-    const remaining = computePlan(b).pages.filter(p => p.kind === 'story' && !p.page.imageId && p.page.layout !== 'text-only').length + (b.cover.imageId ? 0 : 1);
+    const remaining = computePlan(b).pages.filter(needsPic).length + (b.cover.imageId ? 0 : 1);
     return ok({ illustrated: done, remaining });
   });
 
@@ -483,7 +486,19 @@ function buildServer(transportName) {
     overlayBox: z.enum(['soft', 'solid', 'none']).optional(),
     coverLayout: z.enum(Object.keys(COVER_LAYOUTS)).optional(), coverTitleColor: z.string().optional(), coverTitleOutline: z.string().optional(), coverBgColor: z.string().optional(),
     backCoverLayout: z.enum(Object.keys(BACK_COVER_LAYOUTS)).optional(), backCoverBgColor: z.string().optional(),
-  }, async ({ bookId, coverLayout, coverTitleColor, coverTitleOutline, coverBgColor, backCoverLayout, backCoverBgColor, ...design }) => {
+    pageMode: z.enum(['together', 'split']).optional().describe('together = picture and words on one page; split = picture page facing a words page (uses 2 printed pages per story page)'),
+    splitOrder: z.enum(['words-first', 'picture-first']).optional().describe('For split pages: words on the left (words-first) or picture on the left'),
+    coverTitleSize: z.number().min(12).max(140).optional().describe('pt'),
+    coverTitleY: z.number().min(4).max(96).optional().describe('Vertical centre of the title, % of page height'),
+    coverTitleWidth: z.number().min(30).max(100).optional().describe('% of the page width inside the margins'),
+    coverTitleAlign: z.enum(['left', 'center', 'right']).optional(),
+    coverTitleLineHeight: z.number().min(0.7).max(2).optional(),
+    coverTitleOutlineWidth: z.number().min(0).max(0.2).optional().describe('em; 0 = no outline'),
+    coverSubtitleSize: z.number().min(6).max(80).optional().describe('pt'),
+    coverBylineSize: z.number().min(6).max(48).optional().describe('pt'),
+    coverBylinePosition: z.enum(['bottom', 'under-title', 'top']).optional(),
+  }, async ({ bookId, coverLayout, coverTitleColor, coverTitleOutline, coverBgColor, backCoverLayout, backCoverBgColor,
+    coverTitleSize, coverTitleY, coverTitleWidth, coverTitleAlign, coverTitleLineHeight, coverTitleOutlineWidth, coverSubtitleSize, coverBylineSize, coverBylinePosition, ...design }) => {
     const known = new Set(KID_FONTS.map(f => f.name));
     for (const f of [design.titleFont, design.bodyFont]) if (f && !known.has(f)) throw new Error(`Unknown font ${f}. Choose from: ${[...known].join(', ')}`);
     const saved = await mutate(bookId, writer, b => {
@@ -493,6 +508,9 @@ function buildServer(transportName) {
       if (coverTitleColor) cover.titleColor = coverTitleColor;
       if (coverTitleOutline !== undefined) cover.titleStroke = coverTitleOutline;
       if (coverBgColor) cover.bgColor = coverBgColor;
+      const ct = { titleSize: coverTitleSize, titleY: coverTitleY, titleWidth: coverTitleWidth, titleAlign: coverTitleAlign, titleLineHeight: coverTitleLineHeight,
+        titleStrokeWidth: coverTitleOutlineWidth, subtitleSize: coverSubtitleSize, bylineSize: coverBylineSize, bylinePos: coverBylinePosition };
+      Object.entries(ct).forEach(([k, v]) => { if (v !== undefined) cover[k] = v; });
       const backCover = { ...b.backCover };
       if (backCoverLayout) backCover.layout = backCoverLayout;
       if (backCoverBgColor) backCover.bgColor = backCoverBgColor;
@@ -521,13 +539,13 @@ function buildServer(transportName) {
       ...(back ? { backMatter: keepImg(b.backMatter, back) } : {}),
     }));
     const plan = computePlan(saved);
-    return ok({ storySlots: plan.slots, storyPagesWritten: plan.storyCount, warnings: plan.warnings });
+    return ok({ storyPagesFit: plan.capacity, printedStoryPages: plan.slots, storyPagesWritten: plan.storyCount, warnings: plan.warnings });
   });
 
   tool('get_print_plan', 'What prints on every page, the duplex sheet order for the folded booklet, and printing instructions.', { ...bookIdArg }, async ({ bookId }) => {
     const b = await readBook(await resolveBookId(bookId));
     const plan = computePlan(b);
-    const label = p => (p.kind === 'story' ? `story ${p.storyIndex + 1}${p.page.imageId ? '' : ' (no picture yet)'}` : p.kind === 'front' || p.kind === 'back' ? `${p.kind} matter: ${p.matter.type}` : p.kind);
+    const label = p => (p.kind === 'story' ? `story ${p.storyIndex + 1}${p.part ? ` ${p.part}` : ''}${p.page.imageId || p.part === 'words' ? '' : ' (no picture yet)'}` : p.kind === 'front' || p.kind === 'back' ? `${p.kind} matter: ${p.matter.type}` : p.kind);
     return ok({
       pages: plan.pages.map(p => `${p.n}: ${label(p)}`),
       sheets: imposition(b.pageCount).map(s => ({ sheet: s.sheet, front: `${s.front[0]} | ${s.front[1]}`, back: `${s.back[0]} | ${s.back[1]}` })),

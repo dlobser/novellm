@@ -8,8 +8,8 @@ A **Kids Book** tab on theaibookgenerator.com for making illustrated children's 
 2. **Cast & Sheets**: drop in a picture of your characters. The writing AI identifies each character and describes them, then the image AI draws character, prop and environment model sheets. Those sheets are sent as references with every page illustration so characters stay consistent.
 3. **Story**: write the whole story in one go, or plan chapters and then write each one. You can rewrite single pages or revise the whole story with an instruction. The page budget always matches the booklet size.
 4. **Illustrations**: generate, regenerate or upload a picture for each page and the cover. Older versions are kept so you can switch back.
-5. **Design**: title and story fonts (about 30 kid-friendly Google Fonts), size, colors, margins, cover and back-cover layouts, blurb, and front/back pages (title page, copyright, dedication, contents, about the author/illustrator, "The End", custom pages). It has a live preview of the spreads.
-6. **Print**: booklet imposition for duplex printing on 8.5 × 11 (or A4). Pick short- or long-edge flip, or print fronts only and backs only for printers without duplex. You can also save as PDF or download a standalone print file.
+5. **Design**: words and pictures together on one page or on separate facing pages (book-wide, with per-page overrides on the Story tab); title and story fonts (about 30 kid-friendly Google Fonts), size, colors, margins, cover and back-cover layouts, cover title size/height/width/alignment/outline plus subtitle and author-line size and position, blurb, and front/back pages (title page, copyright, dedication, contents, about the author/illustrator, "The End", custom pages). It has a live preview of the spreads.
+6. **Print**: booklet imposition for duplex printing on 8.5 × 11 (or A4). Pick short- or long-edge flip, or print fronts only and backs only for printers without duplex. You can also download a standalone print file, or a **PDF with the pages in reading order** (150 or 300 dpi), or print the pages in order and "Save as PDF" for a vector PDF.
 
 ### Image generators
 - **Gemini** (`gemini-2.5-flash-image`, `gemini-3-pro-image-preview`, or any model id)
@@ -18,7 +18,7 @@ A **Kids Book** tab on theaibookgenerator.com for making illustrated children's 
 - **Placeholder** makes free test images for checking layout and printing.
 
 ### Storage
-- **Browser** (default): the book is kept in localStorage and the pictures in IndexedDB. Use Export/Import to move a book, with its pictures embedded in the file.
+- **Browser** (default): the book is kept in localStorage and the pictures in IndexedDB. Use Export .json/Import to move a book, with its pictures embedded in the file. **Pictures .zip** saves every picture as a normal image file (cover, pages by page number, cast sheets, references; optionally older versions).
 - **MCP bridge**: books live on disk in `~/AIBookGenerator/kids-books`, shared with Claude/ChatGPT and updated live.
 
 ## MCP: work from Claude Desktop or ChatGPT instead of paying for API tokens

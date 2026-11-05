@@ -1,5 +1,5 @@
 import React, { useRef, useState } from 'react';
-import { STORY_LAYOUTS, newPage, newChapter, applyStory, storyPages } from './model.js';
+import { STORY_LAYOUTS, newPage, newChapter, applyStory, storyPages, isSplit, pageAspect } from './model.js';
 import {
   storySystemPrompt, storyPrompt, chapterPlanPrompt, chapterPagesPrompt, revisePagePrompt, reviseStoryPrompt,
   pagePrompt, pageRefs, pageCast, coverPrompt, coverRefs,
@@ -24,12 +24,12 @@ export function StoryPanel({ book, update, ai, run, busy, setTab, plan, bookRef 
 
   const writeAll = () => run('story', async () => {
     if (written && !confirm('Replace the current story with a new one?')) return;
-    const res = await ai.json({ system: sys, prompt: storyPrompt(book, { slots: plan.slots }) });
+    const res = await ai.json({ system: sys, prompt: storyPrompt(book, { slots: plan.capacity }) });
     update(b => applyStory(b, res));
   });
 
   const planChapters = () => run('plan', async () => {
-    const res = await ai.json({ system: sys, prompt: chapterPlanPrompt(book, { slots: plan.slots }) });
+    const res = await ai.json({ system: sys, prompt: chapterPlanPrompt(book, { slots: plan.capacity }) });
     update(b => ({
       ...b,
       title: b.title || res.title || '',
@@ -87,18 +87,31 @@ export function StoryPanel({ book, update, ai, run, busy, setTab, plan, bookRef 
   const deletePage = (ci, pi) => update(b => ({ ...b, chapters: b.chapters.map((c, i) => (i === ci ? { ...c, pages: c.pages.filter((_, k) => k !== pi) } : c)) }));
 
   const flat = storyPages(book);
-  const physical = {};
-  plan.pages.forEach(p => { if (p.kind === 'story') physical[p.page.id] = p.n; });
+  const pageLabel = id => {
+    const r = plan.pageNumbers[id];
+    if (!r) return null;
+    return r.first === r.last ? `p.${r.first}` : `p.${r.first}–${r.last}`;
+  };
+  const full = plan.used === plan.slots && plan.placed === written;
+  const over = plan.placed < written;
   const [minW, maxW] = book.wordsPerPage;
 
   return (
     <div className="kb-panel">
       <div className="kb-card">
         <PageCountPicker book={book} update={update} />
-        <div className={`kb-budget ${written === plan.slots ? 'ok' : written > plan.slots ? 'over' : ''}`}>
-          <div className="kb-budget-bar"><div style={{ width: `${Math.min(100, (written / Math.max(1, plan.slots)) * 100)}%` }} /></div>
-          <span>{written} of {plan.slots} story pages written</span>
-          {written > plan.slots && <button className="btn btn-sm" onClick={() => update({ pageCount: plan.suggestedPageCount })}>Use {plan.suggestedPageCount} pages</button>}
+        <div className={`kb-budget ${full ? 'ok' : over ? 'over' : ''}`}>
+          <div className="kb-budget-bar"><div style={{ width: `${Math.min(100, (plan.used / Math.max(1, plan.slots)) * 100)}%` }} /></div>
+          <span>{written} story page{written === 1 ? '' : 's'} written · {plan.used} of {plan.slots} printed pages used</span>
+          {over && <button className="btn btn-sm" onClick={() => update({ pageCount: plan.suggestedPageCount })}>Use {plan.suggestedPageCount} pages</button>}
+        </div>
+        <div className="flex-row">
+          <span className="text-muted">Words &amp; pictures:</span>
+          <div className="kb-seg">
+            <button className={book.design.pageMode !== 'split' ? 'on' : ''} onClick={() => update(b => ({ ...b, design: { ...b.design, pageMode: 'together' } }))}>Together on one page</button>
+            <button className={book.design.pageMode === 'split' ? 'on' : ''} onClick={() => update(b => ({ ...b, design: { ...b.design, pageMode: 'split' } }))}>Separate facing pages</button>
+          </div>
+          <span className="text-muted">{book.design.pageMode === 'split' ? `Room for ${plan.capacity} story pages (each uses 2 printed pages).` : `Room for ${plan.capacity} story pages.`} You can override any page below.</span>
         </div>
         {plan.warnings.map(w => <div key={w} className="kb-warn">{w}</div>)}
       </div>
@@ -116,8 +129,8 @@ export function StoryPanel({ book, update, ai, run, busy, setTab, plan, bookRef 
           )}
         </div>
         <div className="flex-row mt-md">
-          {busy.story ? <Spinner text={`Writing ${plan.slots} pages…`} /> : (
-            <button className="btn btn-accent" onClick={writeAll} disabled={plan.slots < 1}>✨ Write the whole story ({plan.slots} pages)</button>
+          {busy.story ? <Spinner text={`Writing ${plan.capacity} pages…`} /> : (
+            <button className="btn btn-accent" onClick={writeAll} disabled={plan.capacity < 1}>✨ Write the whole story ({plan.capacity} pages)</button>
           )}
           {chapters && (busy.plan ? <Spinner text="Planning chapters…" /> : <button className="btn" onClick={planChapters}>✨ Plan chapters first</button>)}
           {chapters && book.chapters.some(c => c.summary) && (busy.allChapters ? <Spinner text="Writing chapters…" /> : <button className="btn" onClick={writeAllChapters}>Write all chapters from plan</button>)}
@@ -152,17 +165,26 @@ export function StoryPanel({ book, update, ai, run, busy, setTab, plan, bookRef 
             {ch.pages.map((pg, pi) => {
               const idx = flat.findIndex(f => f.page.id === pg.id);
               const s = flat[idx];
-              const n = physical[pg.id];
+              const n = pageLabel(pg.id);
+              const split = isSplit(book, pg);
               const wc = wordCount(pg.text);
               return (
                 <div key={pg.id} className={`kb-card kb-page ${n ? '' : 'unprinted'}`}>
                   <div className="kb-page-head">
-                    <span className="kb-pnum">{n ? `p.${n}` : 'won’t print'}</span>
+                    <span className="kb-pnum">{n || 'won’t print'}</span>
                     <span className="text-muted">story page {idx + 1}</span>
                     <span className={`kb-wc ${wc > maxW ? 'hi' : wc < minW && pg.layout !== 'image-only' ? 'lo' : ''}`}>{wc} words</span>
-                    <select value={pg.layout} onChange={e => setPage(pg.id, { layout: e.target.value })} style={{ width: 'auto', marginLeft: 'auto' }}>
-                      {Object.entries(STORY_LAYOUTS).map(([k, l]) => <option key={k} value={k}>{l.label}</option>)}
+                    <select value={pg.split === true ? 'split' : pg.split === false ? 'together' : 'default'} title="Picture and words on one page, or on two facing pages"
+                      onChange={e => setPage(pg.id, { split: e.target.value === 'split' ? true : e.target.value === 'together' ? false : null })} style={{ width: 'auto', marginLeft: 'auto' }}>
+                      <option value="default">Book setting ({book.design.pageMode === 'split' ? 'separate' : 'together'})</option>
+                      <option value="together">Together on one page</option>
+                      <option value="split">Picture page + words page</option>
                     </select>
+                    {!split && (
+                      <select value={pg.layout} onChange={e => setPage(pg.id, { layout: e.target.value })} style={{ width: 'auto' }}>
+                        {Object.entries(STORY_LAYOUTS).map(([k, l]) => <option key={k} value={k}>{l.label}</option>)}
+                      </select>
+                    )}
                     <button className="btn btn-sm" title="Move up" onClick={() => movePage(ci, pi, -1)}>↑</button>
                     <button className="btn btn-sm" title="Move down" onClick={() => movePage(ci, pi, 1)}>↓</button>
                     <button className="btn btn-sm" title="Insert page after" onClick={() => insertPage(ci, pi + 1)}>＋</button>
@@ -262,7 +284,7 @@ export function IllustratePanel({ book, update, store, ai, run, busy, setTab, se
     const id = await ai.image({
       prompt: pagePrompt(b, page, { pageNumber: n, extra: extra[pageId] || '', refs }),
       refs,
-      aspect: STORY_LAYOUTS[page.layout]?.aspect || '1:1',
+      aspect: pageAspect(b, page),
     });
     update(bk => mapPage(bk, pageId, p => ({ ...p, imageId: id, altImages: [...(p.altImages || []), id] })));
   });
@@ -279,7 +301,7 @@ export function IllustratePanel({ book, update, store, ai, run, busy, setTab, se
     cancel.current = false;
     const todo = [];
     if (all || !bookRef.current.cover.imageId) todo.push({ cover: true });
-    plan.pages.filter(p => p.kind === 'story' && (all || !p.page.imageId) && p.page.layout !== 'text-only').forEach(p => todo.push({ id: p.page.id, n: p.n }));
+    plan.pages.filter(p => p.kind === 'story' && p.part !== 'words' && (all || !p.page.imageId) && (p.page.layout !== 'text-only' || p.part === 'picture')).forEach(p => todo.push({ id: p.page.id, n: p.n }));
     for (let i = 0; i < todo.length; i++) {
       if (cancel.current) break;
       setProgress(`${i + 1} / ${todo.length}`);
@@ -288,8 +310,8 @@ export function IllustratePanel({ book, update, store, ai, run, busy, setTab, se
     setProgress(null);
   });
 
-  const storyEntries = plan.pages.filter(p => p.kind === 'story');
-  const missing = storyEntries.filter(p => !p.page.imageId && p.page.layout !== 'text-only').length + (book.cover.imageId ? 0 : 1);
+  const storyEntries = plan.pages.filter(p => p.kind === 'story' && p.part !== 'words');
+  const missing = storyEntries.filter(p => !p.page.imageId && (p.page.layout !== 'text-only' || p.part === 'picture')).length + (book.cover.imageId ? 0 : 1);
 
   return (
     <div className="kb-panel">
@@ -345,14 +367,15 @@ export function IllustratePanel({ book, update, store, ai, run, busy, setTab, se
         {storyEntries.map(p => {
           const pg = p.page;
           const refs = useRefs ? pageRefs(book, pg) : [];
-          const portrait = STORY_LAYOUTS[pg.layout]?.aspect === '2:3';
+          const portrait = pageAspect(book, pg) === '2:3';
+          const split = isSplit(book, pg);
           return (
             <div key={pg.id} className="kb-card kb-illus">
               <div className="kb-page-head">
-                <span className="kb-pnum">p.{p.n}</span>
-                <select value={pg.layout} onChange={e => update(b => mapPage(b, pg.id, x => ({ ...x, layout: e.target.value })))} style={{ width: 'auto', fontSize: '0.75rem', padding: '3px 6px' }}>
+                <span className="kb-pnum">p.{p.n}{split ? ' (full-page picture)' : ''}</span>
+                {!split && <select value={pg.layout} onChange={e => update(b => mapPage(b, pg.id, x => ({ ...x, layout: e.target.value })))} style={{ width: 'auto', fontSize: '0.75rem', padding: '3px 6px' }}>
                   {Object.entries(STORY_LAYOUTS).map(([k, l]) => <option key={k} value={k}>{l.label}</option>)}
-                </select>
+                </select>}
               </div>
               <Img store={store} id={pg.imageId} className={`kb-illus-img ${portrait ? 'portrait' : 'square'}`} onClick={() => pg.imageId && setLightbox(pg.imageId)} />
               <div className="kb-illus-text">{pg.text || <em className="text-muted">no words</em>}</div>

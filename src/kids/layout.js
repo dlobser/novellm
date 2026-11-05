@@ -21,8 +21,28 @@ function hexToRgba(hex, a) {
 
 // Outline effect for titles over pictures (works in every browser, unlike text-stroke on HTML).
 function outline(color, w = 0.045) {
+  w = Math.max(0, Math.min(0.2, Number(w) || 0));
   const d = [[0, 1], [1, 0], [0, -1], [-1, 0], [0.7, 0.7], [-0.7, 0.7], [0.7, -0.7], [-0.7, -0.7]];
   return d.map(([x, y]) => `${(x * w).toFixed(3)}em ${(y * w).toFixed(3)}em 0 ${color}`).join(', ') + `, 0 ${w * 2}em ${w * 3}em rgba(0,0,0,.35)`;
+}
+
+// Default vertical centre (% of page height) of the cover title for each cover layout.
+export const COVER_TITLE_DEFAULT_Y = { 'full-title-top': 20, 'full-title-bottom': 80, framed: 14, classic: 17 };
+
+// Cover title box: centred on titleY, as tall as fits there, width and alignment from the cover settings.
+export function coverTitleBox(c) {
+  const y = Math.min(96, Math.max(4, Number(c.titleY ?? COVER_TITLE_DEFAULT_Y[c.layout] ?? 20)));
+  const height = Math.max(10, Math.min(44, 2 * Math.min(y, 100 - y) - 3));
+  const top = y - height / 2;
+  const width = Math.min(100, Math.max(30, Number(c.titleWidth) || 100));
+  const align = ['left', 'right', 'center'].includes(c.titleAlign) ? c.titleAlign : 'center';
+  const w = `calc((100% - 2 * var(--m) - 0.1in) * ${width / 100})`;
+  const horiz = align === 'left'
+    ? `left:calc(var(--m) + 0.05in);width:${w};`
+    : align === 'right'
+      ? `right:calc(var(--m) + 0.05in);width:${w};`
+      : `left:calc(50% - ${w} / 2);width:${w};`;
+  return { y, top, height, horiz, align };
 }
 
 export function renderBookHTML(book, opts = {}) {
@@ -54,7 +74,7 @@ export function renderBookHTML(book, opts = {}) {
   const pageNum = n => (d.pageNumbers ? `<div class="pn"><span>${n}</span></div>` : '');
 
   const chapterHead = p => {
-    if (!chapters || !p.isChapterStart) return '';
+    if (!chapters || !p.isChapterStart || p.part === 'picture') return '';
     return `<div class="ch-head"><div class="ch-num">Chapter ${p.chapterIdx + 1}</div>${p.chapter.title ? `<div class="ch-title">${esc(p.chapter.title)}</div>` : ''}</div>`;
   };
 
@@ -64,6 +84,15 @@ export function renderBookHTML(book, opts = {}) {
     const words = `${chapterHead(p)}${rich(pg.text)}`;
     const layout = pg.layout || 'image-top';
     const bleed = d.bleed ? 'bleed' : 'inset';
+    if (p.part === 'picture') {
+      return `<div class="story full image-only ${bleed}"><div class="pic">${img(pg.imageId, pg.illustration || 'illustration')}</div></div>${pageNum(p.n)}`;
+    }
+    if (p.part === 'words') {
+      return `<div class="story text-only words-page">
+      <div class="words" data-fit="0.55"><div class="inner">${words}</div></div>
+      <div class="orn">✦ ✦ ✦</div>
+    </div>${pageNum(p.n)}`;
+    }
     if (layout === 'image-top' || layout === 'image-bottom') {
       return `<div class="story ${layout} ${bleed}">
         <div class="pic">${img(pg.imageId, pg.illustration || 'illustration')}</div>
@@ -90,16 +119,24 @@ export function renderBookHTML(book, opts = {}) {
   function coverPage() {
     const c = book.cover;
     const L = c.layout || 'full-title-top';
-    const titleStyle = `color:${esc(c.titleColor)};${c.titleStroke ? `text-shadow:${outline(c.titleStroke)}` : ''}`;
-    const titleBlock = `<div class="ttl" style="${titleStyle}">${esc(book.title || 'Untitled')}</div>${book.subtitle ? `<div class="sub" style="${titleStyle}">${esc(book.subtitle)}</div>` : ''}`;
+    const t = coverTitleBox(c);
+    const strokeW = Number(c.titleStrokeWidth ?? 0.045);
+    const titleStyle = `color:${esc(c.titleColor)};${c.titleStroke && strokeW > 0 ? `text-shadow:${outline(c.titleStroke, strokeW)};` : ''}`;
     const byline = [book.author ? `by ${esc(book.author)}` : '', book.illustrator && book.illustrator !== book.author ? `illustrated by ${esc(book.illustrator)}` : ''].filter(Boolean).join('<br>');
-    const by = byline ? `<div class="by" style="${titleStyle}">${byline}</div>` : '';
+    const by = byline ? `<div class="by" style="${titleStyle}font-size:${Number(c.bylineSize) || 15}pt;">${byline}</div>` : '';
+    const subStyle = c.subtitleSize ? `font-size:${Number(c.subtitleSize)}pt;` : '';
+    const titleBlock = `<div class="ttl" style="${titleStyle}line-height:${Number(c.titleLineHeight) || 1.02};">${esc(book.title || 'Untitled')}</div>`
+      + (book.subtitle ? `<div class="sub" style="${titleStyle}${subStyle}">${esc(book.subtitle)}</div>` : '')
+      + (c.bylinePos === 'under-title' && by ? `<div class="by-under">${by}</div>` : '');
     const bleed = d.bleed ? 'bleed' : 'inset';
+    const band = L === 'full-title-bottom'
+      ? `<div class="band" style="background:${hexToRgba(c.bgColor, 0.92)};top:${Math.max(0, t.top - 3)}%;${t.y >= 50 ? 'bottom:0' : `height:${t.height + 6}%`}"></div>`
+      : '';
     return `<div class="cover ${L} ${bleed}" style="background:${esc(c.bgColor)}">
       <div class="pic">${img(c.imageId, 'cover illustration')}</div>
-      ${L === 'full-title-bottom' ? `<div class="band" style="background:${hexToRgba(c.bgColor, 0.92)}"></div>` : ''}
-      <div class="title-zone" data-fit="0.4"><div class="inner">${titleBlock}</div></div>
-      ${by ? `<div class="by-zone">${by}</div>` : ''}
+      ${band}
+      <div class="title-zone" data-fit="0.3" style="top:${t.top}%;height:${t.height}%;${t.horiz}font-size:${Number(c.titleSize) || 46}pt;text-align:${t.align};"><div class="inner">${titleBlock}</div></div>
+      ${by && c.bylinePos !== 'under-title' ? `<div class="by-zone${c.bylinePos === 'top' ? ' at-top' : ''}" style="text-align:${t.align}">${by}</div>` : ''}
     </div>`;
   }
 
@@ -127,7 +164,7 @@ export function renderBookHTML(book, opts = {}) {
     switch (m.type) {
       case 'title':
         return `<div class="matter title-page${m.imageId ? '' : ' no-spot'}">
-          <div class="tp-title" data-fit="0.5"><div class="inner"><div class="ttl">${esc(book.title || 'Untitled')}</div>${book.subtitle ? `<div class="sub">${esc(book.subtitle)}</div>` : ''}</div></div>
+          <div class="tp-title" data-fit="0.5"${m.titleSize ? ` style="font-size:${Number(m.titleSize)}pt"` : ''}><div class="inner"><div class="ttl">${esc(book.title || 'Untitled')}</div>${book.subtitle ? `<div class="sub">${esc(book.subtitle)}</div>` : ''}</div></div>
           ${m.imageId ? `<div class="spot">${img(m.imageId)}</div>` : ''}
           <div class="tp-by">${book.author ? `<div>by ${esc(book.author)}</div>` : ''}${book.illustrator && book.illustrator !== book.author ? `<div class="ill">illustrated by ${esc(book.illustrator)}</div>` : ''}</div>
         </div>`;
@@ -158,7 +195,7 @@ export function renderBookHTML(book, opts = {}) {
 
   const kindLabel = p => ({
     cover: 'Front cover', 'back-cover': 'Back cover', filler: 'Empty story slot',
-    story: `Story ${p.storyIndex + 1}${chapters ? ` · Ch ${p.chapterIdx + 1}` : ''}`,
+    story: `Story ${p.storyIndex + 1}${p.part ? ` · ${p.part}` : ''}${chapters ? ` · Ch ${p.chapterIdx + 1}` : ''}`,
     front: p.matter && p.matter.type, back: p.matter && p.matter.type,
   }[p.kind] || p.kind);
 
@@ -198,6 +235,8 @@ export function renderBookHTML(book, opts = {}) {
       });
     });
     body = parts.join('\n');
+  } else if (mode === 'pages') {
+    body = Array.from({ length: N }, (_, i) => `<section class="single">${renderPage(i + 1)}</section>`).join('\n');
   } else {
     const spreads = [[null, 1]];
     for (let n = 2; n < N; n += 2) spreads.push([n, n + 1 < N ? n + 1 : null]);
@@ -214,7 +253,7 @@ export function renderBookHTML(book, opts = {}) {
   const sheetH = `${paper.sheetH}${u}`;
 
   const css = `
-@page { size: ${sheetW} ${sheetH}; margin: 0; }
+@page { size: ${mode === 'pages' ? `${pw}${u} ${ph}${u}` : `${sheetW} ${sheetH}`}; margin: 0; }
 * { box-sizing: border-box; margin: 0; padding: 0; }
 html, body { background: #dcd8cf; }
 body { -webkit-print-color-adjust: exact; print-color-adjust: exact; font-family: ${fontStack(d.bodyFont)}; }
@@ -268,19 +307,18 @@ body { -webkit-print-color-adjust: exact; print-color-adjust: exact; font-family
 .cover .pic { position: absolute; overflow: hidden; }
 .cover.bleed.full-title-top .pic, .cover.bleed.full-title-bottom .pic { inset: 0; }
 .cover.inset.full-title-top .pic, .cover.inset.full-title-bottom .pic { inset: var(--m); border-radius: 0.14in; }
-.cover .title-zone { position: absolute; left: calc(var(--m) + 0.05in); right: calc(var(--m) + 0.05in); display: flex; font-size: 46pt; }
+.cover .title-zone { position: absolute; display: flex; }
 .cover .title-zone .inner { margin: auto 0; width: 100%; }
 .cover .ttl { font-weight: var(--tw); line-height: 1.02; }
 .cover .sub { font-size: 0.42em; margin-top: 0.25em; font-family: var(--body); font-weight: 700; }
-.cover .by-zone { position: absolute; left: var(--m); right: var(--m); bottom: calc(var(--m) + 0.05in); font-size: 15pt; line-height: 1.25; }
+.cover .by-zone { position: absolute; left: calc(var(--m) + 0.05in); right: calc(var(--m) + 0.05in); bottom: calc(var(--m) + 0.05in); line-height: 1.25; }
+.cover .by-zone.at-top { top: calc(var(--m) + 0.05in); bottom: auto; }
+.cover .by-under { margin-top: 0.35em; }
+.cover .by-under .by { line-height: 1.25; }
 .cover .by { font-family: var(--body); font-weight: 700; }
-.cover.full-title-top .title-zone { top: calc(var(--m) + 0.1in); height: 34%; }
-.cover.full-title-bottom .band { position: absolute; left: 0; right: 0; bottom: 0; height: 34%; }
-.cover.full-title-bottom .title-zone { bottom: calc(var(--m) + 0.55in); height: calc(34% - var(--m) - 0.6in); }
-.cover.framed .title-zone { top: var(--m); height: 24%; }
+.cover.full-title-bottom .band { position: absolute; left: 0; right: 0; }
 .cover.framed .pic { top: calc(24% + var(--m) + 0.05in); bottom: calc(var(--m) + 0.75in); left: calc(var(--m) + 0.1in); right: calc(var(--m) + 0.1in);
   border-radius: 0.2in; border: 0.07in solid #fff; box-shadow: 0 0.05in 0.2in rgba(0,0,0,.25); }
-.cover.classic .title-zone { top: var(--m); height: calc(33% - var(--m) - 0.05in); }
 .cover.classic .pic { left: 0; right: 0; bottom: 0; top: 34%; }
 .cover.inset.classic .pic { left: var(--m); right: var(--m); bottom: var(--m); border-radius: 0.14in; }
 
@@ -329,7 +367,10 @@ body { -webkit-print-color-adjust: exact; print-color-adjust: exact; font-family
 .filler-note { margin: auto; font: 9pt sans-serif; color: #b9b1a3; }
 
 /* ------------- screen preview chrome ------------- */
+.words-page .words { top: calc(var(--m) + 0.3in) !important; bottom: calc(var(--m) + 0.7in) !important; }
+.words-page .words .inner { font-size: 1.2em; }
 @media screen {
+  .single { margin: 0 auto 24px; width: max-content; box-shadow: 0 2px 14px rgba(0,0,0,.25); }
   body { zoom: ${zoom}; padding: 24px; }
   .spread { display: flex; justify-content: center; margin: 0 auto 28px; width: max-content; }
   .spread figure { margin: 0; display: flex; flex-direction: column; align-items: center; }
@@ -345,6 +386,8 @@ body { -webkit-print-color-adjust: exact; print-color-adjust: exact; font-family
   .sheet-inner { box-shadow: 0 3px 18px rgba(0,0,0,.3); }
 }
 @media print {
+  .single { break-after: page; page-break-after: always; }
+  .single:last-child { break-after: auto; page-break-after: auto; }
   html, body { background: #fff; }
   .screen-only, figcaption { display: none !important; }
   .noimg { background: none; color: transparent; }
@@ -367,7 +410,9 @@ body { -webkit-print-color-adjust: exact; print-color-adjust: exact; font-family
     var over = [], shrunk = [];
     document.querySelectorAll('[data-fit]').forEach(function(box){
       var inner = box.firstElementChild; if (!inner) return;
-      box.style.fontSize = '';
+      // Start from the size the layout asked for (e.g. the chosen cover title size), not the CSS default.
+      if (!box.hasAttribute('data-fs0')) box.setAttribute('data-fs0', box.style.fontSize || '');
+      box.style.fontSize = box.getAttribute('data-fs0');
       var size = parseFloat(getComputedStyle(box).fontSize);
       var min = size * parseFloat(box.getAttribute('data-fit') || '0.6');
       var n = 0;
