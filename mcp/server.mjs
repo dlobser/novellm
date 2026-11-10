@@ -26,7 +26,11 @@ import { generateImage, IMAGE_PROVIDERS } from '../src/kids/imageProviders.js';
 import { renderBookHTML, printInstructions } from '../src/kids/layout.js';
 import { KID_FONTS } from '../src/kids/fonts.js';
 import {
-  DATA_DIR, BOOKS_DIR, ConflictError, readBook, writeBook, updateBook, createBook, listBooks, setActive,
+  outlineBrief, chapterBrief, chapterStatus, novelSummary, saveChapterText, insertChapterAt, removeChapterAt, manuscript, wordCount,
+} from '../src/novelModel.js';
+import {
+  DATA_DIR, BOOKS_DIR, NOVELS_DIR, ConflictError, readBook, writeBook, updateBook, createBook, listBooks, setActive,
+  readNovel, writeNovel, updateNovel, createNovel, listNovels,
   saveImage, readImage, imagePath, gcImages, readSettings, writeSettings, imageSettings, redactSettings,
 } from './store.mjs';
 
@@ -46,7 +50,12 @@ const log = (...a) => console.error('[kids-book]', ...a); // stdout belongs to t
 
 // ===================================================================== MCP tools
 
-const INSTRUCTIONS = `Kids Book Studio (theaibookgenerator.com) — make illustrated children's books that print as a folded booklet on letter paper.
+const INSTRUCTIONS = `The AI Book Generator (theaibookgenerator.com) — two kinds of book, each with its own tools:
+- NOVELS (adult books, written chapter by chapter): list_novels / create_novel, get_novel, update_novel_details, set_background_item, get_outline_brief → save_outline, then for each chapter get_chapter_brief → write_chapter (with a continuity summary). Optional: get_chapter_brief purpose=review → save_chapter_feedback, then purpose=revise → write_chapter. export_novel writes the manuscript. Every novel tool needs an explicit novelId.
+  YOU write the outline and the prose. Write chapters in order so each brief has the story so far.
+- KIDS BOOKS (illustrated picture books, the tools below with bookId).
+
+Kids books — make illustrated children's books that print as a folded booklet on letter paper.
 Several chats can work on different books at the same time. Every book tool needs an explicit bookId; there is no "current book".
 If the user gave you a book ID, use only that one. Never edit a book you weren't asked to work on.
 Typical flow:
@@ -588,6 +597,192 @@ function buildServer(transportName) {
     return ok({ file: out, alsoAt: `http://127.0.0.1:${PORT}/print/${b.id}`, instructions: printInstructions(b) });
   });
 
+  // ================================================================ novels (adult books)
+  const novelIdArg = { novelId: z.string().describe('Id of the novel to work on (from list_novels or create_novel). Required — always the same novel you were asked to work on.') };
+  const needNovel = id => {
+    if (!id) throw new Error('novelId is required. Use list_novels (or create_novel) to get the id of the novel you were asked to work on, and pass it on every call.');
+    return id;
+  };
+  const changeNovel = (novelId, fn) => updateNovel(needNovel(novelId), writer, fn);
+  const chIdx = (novel, chapter) => {
+    if (!novel.outline[chapter - 1]) throw new Error(`There is no chapter ${chapter}; the outline has ${novel.outline.length} chapters.`);
+    return chapter - 1;
+  };
+  const bgChapters = v => (v === undefined || v === 'all' || (Array.isArray(v) && !v.length) ? 'all' : v.map(n => n - 1));
+
+  tool('list_novels', 'List the novels (adult books, chapter by chapter) stored on this computer with their ids.', {}, async () => {
+    const novels = await listNovels();
+    return ok({ novels, hint: novels.length ? 'Pass the novelId of the novel you are working on to every other novel tool. create_novel starts a new one.' : 'No novels yet — create_novel.' });
+  }, { readOnlyHint: true });
+
+  tool('create_novel', 'Create a new novel. Returns its novelId — pass that id to every later call. Does not change what anyone else is working on.', {
+    title: z.string().optional(),
+    synopsis: z.string().optional().describe('What the novel is about'),
+    style: z.string().optional().describe('Writing style / voice instructions used for every chapter'),
+    chapterCount: z.number().int().min(1).max(200).optional(),
+    chapterWordCountMin: z.number().int().min(200).optional(),
+    chapterWordCountMax: z.number().int().min(200).optional(),
+    characters: z.array(z.string()).optional().describe('One string per character: name, role, short description'),
+    settings: z.array(z.string()).optional().describe('One string per place, period, object or world detail'),
+  }, async ({ style, ...a }) => {
+    const project = Object.fromEntries(Object.entries({ ...a, systemPrompt: style }).filter(([, v]) => v !== undefined));
+    const n = await createNovel({ project }, writer);
+    return ok({ novelId: n.id, created: novelSummary(n), next: `Use novelId "${n.id}" on every call. Fill in details with update_novel_details / set_background_item, then get_outline_brief → save_outline.` });
+  });
+
+  tool('get_novel', 'Get a novel: project details (synopsis, characters, world, background, style, editors), the outline, and which chapters are written (with word counts and continuity summaries). Chapter text is not included — use read_chapter.', { ...novelIdArg }, async ({ novelId }) => {
+    const n = await readNovel(needNovel(novelId));
+    return ok({
+      ...novelSummary(n),
+      project: { ...n.project, style: n.project.systemPrompt },
+      chapters: chapterStatus(n).map(s => ({ ...s, outline: n.outline[s.chapter - 1].description, summary: n.chapters[s.chapter - 1]?.summary || undefined })),
+      webApp: 'https://theaibookgenerator.com → Novel → Settings → MCP bridge',
+    });
+  }, { readOnlyHint: true });
+
+  tool('update_novel_details', 'Change the title, synopsis, style, chapter count, word range, characters or world details of a novel. Lists you pass replace the old list.', {
+    ...novelIdArg,
+    title: z.string().optional(), synopsis: z.string().optional(),
+    style: z.string().optional().describe('Writing style / voice instructions used for every chapter'),
+    chapterCount: z.number().int().min(1).max(200).optional().describe('Chapters the outline should have'),
+    chapterWordCountMin: z.number().int().min(200).optional(), chapterWordCountMax: z.number().int().min(200).optional(),
+    characters: z.array(z.string()).optional(), settings: z.array(z.string()).optional(),
+    acknowledgementsText: z.string().optional(), copyrightText: z.string().optional(),
+  }, async ({ novelId, style, ...rest }) => {
+    const patch = Object.fromEntries(Object.entries({ ...rest, systemPrompt: style }).filter(([, v]) => v !== undefined));
+    const n = await changeNovel(novelId, nv => ({ ...nv, project: { ...nv.project, ...patch } }));
+    return ok(novelSummary(n));
+  });
+
+  tool('set_background_item', 'Add, update (matched by name) or remove a background / reference entry: character bio, world building, style guide, timeline, notes. Entries can apply to all chapters or only some.', {
+    ...novelIdArg,
+    name: z.string(),
+    type: z.string().optional().describe('e.g. character bio, world building, style guide, timeline, research, notes'),
+    content: z.string().optional(),
+    chapters: z.union([z.literal('all'), z.array(z.number().int().min(1))]).optional().describe('"all" or 1-based chapter numbers it applies to'),
+    remove: z.boolean().optional(),
+  }, async ({ novelId, name, type, content, chapters, remove }) => {
+    const n = await changeNovel(novelId, nv => {
+      const key = name.trim().toLowerCase();
+      const list = nv.project.background;
+      const i = list.findIndex(b => (b.name || '').trim().toLowerCase() === key);
+      let next;
+      if (remove) next = list.filter((_, k) => k !== i);
+      else if (i >= 0) next = list.map((b, k) => (k === i ? { ...b, ...(type ? { type } : {}), ...(content !== undefined ? { content } : {}), ...(chapters !== undefined ? { chapters: bgChapters(chapters) } : {}) } : b));
+      else next = [...list, { type: type || 'notes', name, content: content || '', chapters: bgChapters(chapters) }];
+      return { ...nv, project: { ...nv.project, background: next } };
+    });
+    return ok({ background: n.project.background.map(b => ({ name: b.name, type: b.type, chapters: b.chapters === 'all' ? 'all' : (b.chapters || []).map(c => c + 1) })) });
+  });
+
+  tool('get_outline_brief', 'Get the brief for writing the chapter outline (project context, chapter count). Read this before save_outline.', { ...novelIdArg }, async ({ novelId }) => {
+    return ok(outlineBrief(await readNovel(needNovel(novelId))));
+  }, { readOnlyHint: true });
+
+  tool('save_outline', 'Save the chapter-by-chapter outline you wrote. Replaces the whole outline. Already-written chapter text stays with its chapter number.', {
+    ...novelIdArg,
+    chapters: z.array(z.object({ title: z.string(), description: z.string().describe('One paragraph: what happens') })).min(1),
+  }, async ({ novelId, chapters }) => {
+    let orphaned = 0;
+    const n = await changeNovel(novelId, nv => {
+      const keep = {};
+      for (const [k, v] of Object.entries(nv.chapters)) { if (Number(k) < chapters.length) keep[k] = v; else if (v?.text) orphaned++; }
+      return { ...nv, outline: chapters, chapters: keep, project: { ...nv.project, chapterCount: chapters.length } };
+    });
+    return ok({ ...novelSummary(n), ...(orphaned ? { warning: `${orphaned} written chapter(s) beyond chapter ${chapters.length} were dropped.` } : {}), next: 'get_chapter_brief for chapter 1, write it, then write_chapter.' });
+  });
+
+  tool('update_outline_chapter', 'Change one outline entry, insert a new chapter (shifting later chapters and their text along), or delete a chapter.', {
+    ...novelIdArg,
+    chapter: z.number().int().min(1).describe('1-based. For insert: the new chapter\'s position'),
+    action: z.enum(['update', 'insert', 'delete']).optional(),
+    title: z.string().optional(), description: z.string().optional(),
+  }, async ({ novelId, chapter, action = 'update', title, description }) => {
+    const n = await changeNovel(novelId, nv => {
+      if (action === 'insert') {
+        if (chapter > nv.outline.length + 1) throw new Error(`Chapter ${chapter} is past the end (the outline has ${nv.outline.length}).`);
+        return insertChapterAt(nv, chapter - 1, { title: title || `Chapter ${chapter}`, description: description || '' });
+      }
+      const i = chIdx(nv, chapter);
+      if (action === 'delete') return removeChapterAt(nv, i);
+      return { ...nv, outline: nv.outline.map((o, k) => (k === i ? { title: title ?? o.title, description: description ?? o.description } : o)) };
+    });
+    return ok({ ...novelSummary(n), outline: n.outline.map((o, i) => `${i + 1}. ${o.title}`) });
+  });
+
+  tool('get_chapter_brief', 'Get everything needed to write, revise or review one chapter: style, project context, the story so far (continuity summaries, neighbouring chapters in full) and the task. purpose: write (default), revise (uses revision notes) or review (editor feedback).', {
+    ...novelIdArg,
+    chapter: z.number().int().min(1),
+    purpose: z.enum(['write', 'revise', 'review']).optional(),
+    revisionNotes: z.string().optional().describe('For revise: what to change. Defaults to notes saved with the chapter'),
+  }, async ({ novelId, chapter, purpose = 'write', revisionNotes }) => {
+    const n = await readNovel(needNovel(novelId));
+    return ok(chapterBrief(n, chIdx(n, chapter), { purpose, notes: revisionNotes || '' }));
+  }, { readOnlyHint: true });
+
+  tool('write_chapter', 'Save the full text of one chapter you wrote (or revised), plus a short factual continuity summary that later chapters rely on.', {
+    ...novelIdArg,
+    chapter: z.number().int().min(1),
+    text: z.string().min(1).describe('The chapter prose only — no chapter heading'),
+    summary: z.string().optional().describe('Factual continuity notes: who was there, what happened, places, objects, relationship changes, time, promises/foreshadowing'),
+  }, async ({ novelId, chapter, text, summary }) => {
+    const n = await changeNovel(novelId, nv => saveChapterText(nv, chIdx(nv, chapter), { text, summary }));
+    const c = n.chapters[chapter - 1];
+    return ok({ chapter, words: wordCount(c.text), summarySaved: !!c.summary, progress: novelSummary(n), ...(summary ? {} : { warning: 'No continuity summary saved — later chapters will only see the outline for this one. Call write_chapter again with a summary, or set_chapter_notes.' }) });
+  });
+
+  tool('read_chapter', 'Read one chapter: full text, continuity summary, editor feedback and revision notes.', {
+    ...novelIdArg,
+    chapter: z.number().int().min(1),
+  }, async ({ novelId, chapter }) => {
+    const n = await readNovel(needNovel(novelId));
+    const i = chIdx(n, chapter);
+    const c = n.chapters[i];
+    return ok({ chapter, title: n.outline[i].title, outline: n.outline[i].description, written: !!c?.text, words: wordCount(c?.text), text: c?.text || '', summary: c?.summary || '', feedback: c?.feedback || [], revisionNotes: c?.revisionNotes || '' });
+  }, { readOnlyHint: true });
+
+  tool('set_chapter_notes', 'Set a chapter\'s continuity summary and/or its revision notes without changing its text.', {
+    ...novelIdArg,
+    chapter: z.number().int().min(1),
+    summary: z.string().optional(), revisionNotes: z.string().optional(),
+  }, async ({ novelId, chapter, summary, revisionNotes }) => {
+    await changeNovel(novelId, nv => {
+      const i = chIdx(nv, chapter);
+      const c = nv.chapters[i];
+      if (!c) throw new Error(`Chapter ${chapter} hasn't been written yet.`);
+      return { ...nv, chapters: { ...nv.chapters, [i]: { ...c, ...(summary !== undefined ? { summary } : {}), ...(revisionNotes !== undefined ? { revisionNotes } : {}) } } };
+    });
+    return ok(`Saved notes for chapter ${chapter}.`);
+  });
+
+  tool('save_chapter_feedback', 'Save editorial feedback on a chapter (as one of the novel\'s editors). It shows on the website next to the chapter and can become revision notes.', {
+    ...novelIdArg,
+    chapter: z.number().int().min(1),
+    editorName: z.string(),
+    feedback: z.string(),
+    useAsRevisionNotes: z.boolean().optional().describe('Also append it to the chapter\'s revision notes'),
+  }, async ({ novelId, chapter, editorName, feedback, useAsRevisionNotes }) => {
+    await changeNovel(novelId, nv => {
+      const i = chIdx(nv, chapter);
+      const c = nv.chapters[i];
+      if (!c?.text) throw new Error(`Chapter ${chapter} hasn't been written yet.`);
+      const notes = useAsRevisionNotes ? [c.revisionNotes, `[${editorName}]:\n${feedback}`].filter(Boolean).join('\n\n') : c.revisionNotes;
+      return { ...nv, chapters: { ...nv.chapters, [i]: { ...c, feedback: [...(c.feedback || []), { editorName, text: feedback }], revisionNotes: notes } } };
+    });
+    return ok(`Feedback from ${editorName} saved on chapter ${chapter}.`);
+  });
+
+  tool('export_novel', 'Write the written chapters as one manuscript file (Markdown or plain text). Returns the file path.', {
+    ...novelIdArg,
+    format: z.enum(['markdown', 'text']).optional(),
+    outputPath: z.string().optional().describe('Where to write it (default: the novel\'s folder)'),
+  }, async ({ novelId, format = 'markdown', outputPath }) => {
+    const n = await readNovel(needNovel(novelId));
+    const out = outputPath || path.join(NOVELS_DIR, n.id, `${safeName(n.project.title || 'novel')}.${format === 'markdown' ? 'md' : 'txt'}`);
+    await fsp.writeFile(out, manuscript(n, format));
+    return ok({ file: out, ...novelSummary(n) });
+  });
+
   return server;
 }
 
@@ -679,7 +874,8 @@ async function route(req, res) {
 
   if (p === '/' || p === '/api/health') {
     const books = await listBooks();
-    return send(res, 200, { ok: true, name: 'kids-book-studio', version: VERSION, dataDir: DATA_DIR, serverPath: SERVER_PATH, books: books.length, mcp: `http://127.0.0.1:${PORT}/mcp` });
+    const novels = await listNovels();
+    return send(res, 200, { ok: true, name: 'kids-book-studio', version: VERSION, dataDir: DATA_DIR, serverPath: SERVER_PATH, books: books.length, novels: novels.length, features: ['books', 'novels'], mcp: `http://127.0.0.1:${PORT}/mcp` });
   }
 
   if (p === '/api/events') {
@@ -710,7 +906,28 @@ async function route(req, res) {
     }
   }
 
-  let m = p.match(/^\/api\/books\/([\w-]+)$/);
+  if (p === '/api/novels' && req.method === 'GET') return send(res, 200, await listNovels());
+  if (p === '/api/novels' && req.method === 'POST') {
+    const body = JSON.parse((await readBody(req)).toString('utf8') || '{}');
+    return send(res, 201, await createNovel(body, req.headers['x-kidsbook-client'] || 'web'));
+  }
+  let m = p.match(/^\/api\/novels\/([\w-]+)$/);
+  if (m) {
+    if (req.method === 'GET') return send(res, 200, await readNovel(m[1]));
+    if (req.method === 'PUT') {
+      const body = JSON.parse((await readBody(req)).toString('utf8'));
+      await readNovel(m[1]);
+      try {
+        const saved = await writeNovel({ ...body, id: m[1] }, { writer: req.headers['x-kidsbook-client'] || 'web', baseRev: body.rev ?? null });
+        return send(res, 200, saved);
+      } catch (e) {
+        if (e.status === 409) return send(res, 409, e.current);
+        throw e;
+      }
+    }
+  }
+
+  m = p.match(/^\/api\/books\/([\w-]+)$/);
   if (m) {
     if (req.method === 'GET') return send(res, 200, await readBook(m[1]));
     if (req.method === 'PUT') {
@@ -755,33 +972,38 @@ async function route(req, res) {
   return send(res, 404, { error: 'Not found' });
 }
 
-function watchBooks() {
+function watchDir(dir, file, type, idKey, list) {
   const timers = new Map();
   const changed = id => {
     clearTimeout(timers.get(id));
     timers.set(id, setTimeout(async () => {
       try {
-        const raw = JSON.parse(await fsp.readFile(path.join(BOOKS_DIR, id, 'book.json'), 'utf8'));
-        broadcast({ type: 'book', bookId: id, rev: raw.rev, writer: raw._writer || '' });
+        const raw = JSON.parse(await fsp.readFile(path.join(dir, id, file), 'utf8'));
+        broadcast({ type, [idKey]: id, rev: raw.rev, writer: raw._writer || '' });
       } catch (e) { /* mid-write */ }
     }, 120));
   };
   try {
-    fs.watch(BOOKS_DIR, { recursive: true }, (evt, filename) => {
+    fs.watch(dir, { recursive: true }, (evt, filename) => {
       if (!filename) return;
       const parts = String(filename).split(/[\\/]/);
-      if (parts.length === 2 && parts[1] === 'book.json') changed(parts[0]);
+      if (parts.length === 2 && parts[1] === file) changed(parts[0]);
     });
   } catch (e) {
-    log('fs.watch unavailable, polling instead');
+    log(`fs.watch unavailable for ${type}s, polling instead`);
     const revs = new Map();
     setInterval(async () => {
-      for (const b of await listBooks()) {
+      for (const b of await list()) {
         if (revs.has(b.id) && revs.get(b.id) !== b.rev) changed(b.id);
         revs.set(b.id, b.rev);
       }
     }, 1500);
   }
+}
+
+function watchBooks() {
+  watchDir(BOOKS_DIR, 'book.json', 'book', 'bookId', listBooks);
+  watchDir(NOVELS_DIR, 'novel.json', 'novel', 'novelId', listNovels);
 }
 
 function startHttp() {

@@ -23,7 +23,7 @@ A **Kids Book** tab on theaibookgenerator.com for making illustrated children's 
 
 ## MCP: work from Claude Desktop or ChatGPT instead of paying for API tokens
 
-`mcp/server.mjs` is an MCP server with 24 tools: list/create books, cast, `get_writing_brief` → `write_story`, page edits, sheet/page/cover generation, `view_image`, design, back cover, matter pages, print plan, and print-file export. The writing is done by your chat app. Images still use the configured generator, and ComfyUI keeps that free.
+`mcp/server.mjs` is an MCP server with 38 tools: 24 for kids books and 14 for novels (see [Novels over MCP](#novels-over-mcp)). The kids-book tools cover list/create books, cast, `get_writing_brief` → `write_story`, page edits, sheet/page/cover generation, `view_image`, design, back cover, matter pages, print plan, and print-file export. The writing is done by your chat app. Images still use the configured generator, and ComfyUI keeps that free.
 
 ```bash
 npm install
@@ -74,6 +74,21 @@ There is no "current book" on the server. Every book tool needs a `bookId`, so a
 3. Click **New tab** to watch each book in its own browser tab (`?kidsbook=<id>`). Each tab keeps its own book, and opening a book in one tab doesn't change the others.
 
 Image generation is safe in parallel. Each job is tied to the book and page it was started for, and edits to the same book are queued so none get lost. `set_image_settings` with a `bookId` changes the generator for that book only. Without one, it changes the default for every book.
+
+### Novels over MCP
+
+The same bridge serves novels too. In Novel mode, go to **Settings → MCP bridge**, then *Check connection* and either *Send this novel to the bridge* or *New empty novel*. Novels are saved in `~/AIBookGenerator/kids-books/novels/<novelId>/novel.json`, in the same `{ project, outline, chapters }` format as Export JSON.
+
+The chat does the writing:
+1. `create_novel` or `list_novels`, then `update_novel_details` and `set_background_item`.
+2. `get_outline_brief`, then `save_outline`.
+3. For each chapter, in order: `get_chapter_brief`, then `write_chapter` with a short continuity summary. Later chapters' briefs use those summaries.
+4. Optional: `get_chapter_brief` with `purpose: "review"`, then `save_chapter_feedback`, then `purpose: "revise"` and `write_chapter` again.
+5. `export_novel` writes a Markdown or plain-text manuscript.
+
+Other tools: `get_novel`, `read_chapter`, `update_outline_chapter` (update, insert or delete; written chapters move with their outline entry) and `set_chapter_notes`.
+
+Every novel tool needs a `novelId`. Like kids books, each novel has **New tab** (`?novel=<id>`) and **Copy chat prompt** buttons, so you can run one chat per novel. While a novel is open from the bridge, the page autosaves to it and leaves the browser's own copy alone. *Disconnect* brings the browser copy back.
 
 Useful URLs while the bridge runs: `http://127.0.0.1:7801/preview/<bookId>` shows the spreads, and `http://127.0.0.1:7801/print/<bookId>` gives print-ready sheets.
 

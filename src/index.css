@@ -203,6 +203,17 @@ body {
   .mode-switch { flex-direction: column; }
 }
 
+/* NOVEL BRIDGE */
+.novel-table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
+.novel-table th, .novel-table td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--border); vertical-align: middle; }
+.novel-table th { color: var(--text-secondary); font-weight: 500; font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.04em; }
+.novel-table tr.active td { background: var(--accent-glow); }
+.novel-table a.btn { text-decoration: none; }
+.store-chip { font-size: 0.78rem; color: var(--text-secondary); background: none; border: 1px solid var(--border); border-radius: 999px; padding: 3px 10px; cursor: pointer; font-family: var(--font-body); }
+.store-chip.bridge { color: var(--success); border-color: var(--success); }
+.store-chip.offline { color: var(--danger); border-color: var(--danger); }
+.bridge-notice { margin-bottom: 12px; padding: 8px 12px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--bg-secondary); font-size: 0.85rem; display: flex; justify-content: space-between; gap: 8px; }
+
 /* FORM ELEMENTS */
 label {
   display: block;

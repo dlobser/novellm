@@ -4,7 +4,9 @@ import OutlineTab from './tabs/OutlineTab.jsx';
 import ChaptersTab from './tabs/ChaptersTab.jsx';
 import FullBookTab from './tabs/FullBookTab.jsx';
 import PublishTab from './tabs/PublishTab.jsx';
-import CollapsibleSection from './components/CollapsibleSection.jsx';
+import SettingsTab from './tabs/SettingsTab.jsx';
+import { DEFAULT_PROJECT, normalizeNovel } from './novelModel.js';
+import { novelBridge, NOVEL_CLIENT_ID, loadBridgePref, saveBridgePref, tabNovelId, rememberTabNovel } from './novelBridge.js';
 
 // ── Provider Registry ──────────────────────────────────────────────
 // type: 'anthropic' uses Anthropic's native API format
@@ -59,30 +61,6 @@ export const PROVIDER_CATALOG = {
 // Kids Book Studio is self-contained and loaded on demand (keeps the novel pages unchanged).
 const KidsBookStudio = lazy(() => import('./kids/KidsBookStudio.jsx'));
 
-const DEFAULT_PROJECT = {
-  title: '',
-  synopsis: '',
-  characters: [],
-  settings: [],
-  systemPrompt: '',
-  editors: [],
-  background: [],
-  chapterWordCountMin: 2000,
-  chapterWordCountMax: 5000,
-  chapterCount: 25,
-  frontBackMatter: {
-    tableOfContents: true,
-    bibliography: false,
-    index: false,
-    acknowledgements: false,
-    copyrightNotice: false,
-  },
-  acknowledgementsText: '',
-  copyrightText: '',
-  bibliographyText: '',
-  indexText: '',
-};
-
 function loadProject() {
   try {
     const raw = localStorage.getItem('novel_project');
@@ -133,22 +111,79 @@ function loadProviderKeys() {
 export default function App() {
   // Two separate modes: a novel (adult book) or a kids' picture book.
   // ?kidsbook=<id> opens a bridge book straight in kids mode (one browser tab per book).
-  const [mode, setModeRaw] = useState(() => (new URLSearchParams(window.location.search).has('kidsbook') ? 'kids' : (localStorage.getItem('book_mode') === 'kids' ? 'kids' : 'novel')));
+  // ?novel=<id> does the same for a novel on the bridge.
+  const [mode, setModeRaw] = useState(() => {
+    const q = new URLSearchParams(window.location.search);
+    if (q.has('kidsbook')) return 'kids';
+    if (q.has('novel')) return 'novel';
+    return localStorage.getItem('book_mode') === 'kids' ? 'kids' : 'novel';
+  });
   const setMode = m => {
     setModeRaw(m);
     localStorage.setItem('book_mode', m);
-    if (m === 'novel') {
-      const u = new URL(window.location.href);
-      if (u.searchParams.has('kidsbook')) { u.searchParams.delete('kidsbook'); window.history.replaceState(null, '', u); }
-    }
+    const u = new URL(window.location.href);
+    const other = m === 'novel' ? 'kidsbook' : 'novel';
+    if (u.searchParams.has(other)) { u.searchParams.delete(other); window.history.replaceState(null, '', u); }
   };
   const [tab, setTab] = useState(0);
   const [activeProvider, setActiveProvider] = useState(() => localStorage.getItem('novel_api_provider') || 'anthropic');
   const [activeModel, setActiveModel] = useState(() => localStorage.getItem('novel_api_model') || 'claude-sonnet-4-20250514');
   const [providerKeys, setProviderKeys] = useState(() => loadProviderKeys());
-  const [project, setProject] = useState(() => loadProject() || { ...DEFAULT_PROJECT });
-  const [outline, setOutline] = useState(() => loadOutline());
-  const [chapters, setChapters] = useState(() => loadChapters());
+  const [project, setProjectRaw] = useState(() => loadProject() || { ...DEFAULT_PROJECT });
+  const [outline, setOutlineRaw] = useState(() => loadOutline());
+  const [chapters, setChaptersRaw] = useState(() => loadChapters());
+
+  // ── Where the novel lives: this browser (localStorage) or the MCP bridge ──
+  // On the bridge, edits autosave there and changes made by Claude/ChatGPT show up live.
+  // The browser copy in localStorage is left alone while a bridge novel is open.
+  const [novelStore, setNovelStore] = useState(null); // { url, novelId }
+  const storeRef = useRef(null);
+  const [bridgeLive, setBridgeLive] = useState(false);
+  const [bridgeNotice, setBridgeNoticeRaw] = useState('');
+  const noticeTimer = useRef(null);
+  const setBridgeNotice = useCallback(text => {
+    setBridgeNoticeRaw(text);
+    clearTimeout(noticeTimer.current);
+    if (text) noticeTimer.current = setTimeout(() => setBridgeNoticeRaw(''), 8000);
+  }, []);
+  const novelDirty = useRef(false);
+  const novelRev = useRef(0);
+  const saveChain = useRef(Promise.resolve());
+
+  // Setters handed to the tabs mark the novel as edited (so it autosaves to the bridge).
+  const setProject = useCallback(v => { novelDirty.current = true; setProjectRaw(v); }, []);
+  const setOutline = useCallback(v => { novelDirty.current = true; setOutlineRaw(v); }, []);
+  const setChapters = useCallback(v => { novelDirty.current = true; setChaptersRaw(v); }, []);
+
+  const applyNovel = useCallback(raw => {
+    const n = normalizeNovel(raw);
+    novelRev.current = n.rev || 0;
+    novelDirty.current = false;
+    setProjectRaw(n.project);
+    setOutlineRaw(n.outline);
+    setChaptersRaw(n.chapters);
+  }, []);
+
+  const openNovel = useCallback(async (url, novelId) => {
+    const n = await novelBridge.load(url, novelId);
+    storeRef.current = { url, novelId };
+    applyNovel(n);
+    setNovelStore({ url, novelId });
+    saveBridgePref({ url, enabled: true, novelId });
+    rememberTabNovel(novelId);
+    return n;
+  }, [applyNovel]);
+
+  const disconnectNovel = useCallback(() => {
+    storeRef.current = null;
+    setNovelStore(null);
+    saveBridgePref({ ...loadBridgePref(), enabled: false });
+    rememberTabNovel(null);
+    novelDirty.current = false;
+    setProjectRaw(loadProject() || { ...DEFAULT_PROJECT });
+    setOutlineRaw(loadOutline());
+    setChaptersRaw(loadChapters());
+  }, []);
   const [loading, setLoading] = useState({});
   const [theme, setTheme] = useState(() => localStorage.getItem('novel_theme') || 'dark');
 
@@ -160,10 +195,89 @@ export default function App() {
     localStorage.setItem('novel_theme', theme);
   }, [theme]);
 
-  // Persist
-  useEffect(() => { localStorage.setItem('novel_project', JSON.stringify(project)); }, [project]);
-  useEffect(() => { localStorage.setItem('novel_outline', JSON.stringify(outline)); }, [outline]);
-  useEffect(() => { localStorage.setItem('novel_chapters', JSON.stringify(chapters)); }, [chapters]);
+  // Persist (browser copy only — a bridge novel saves to the bridge instead)
+  useEffect(() => { if (!storeRef.current) localStorage.setItem('novel_project', JSON.stringify(project)); }, [project]);
+  useEffect(() => { if (!storeRef.current) localStorage.setItem('novel_outline', JSON.stringify(outline)); }, [outline]);
+  useEffect(() => { if (!storeRef.current) localStorage.setItem('novel_chapters', JSON.stringify(chapters)); }, [chapters]);
+
+  // Reopen this tab's bridge novel (URL ?novel=, this tab's last one, or the last one used).
+  const triedBridge = useRef(false);
+  useEffect(() => {
+    if (mode !== 'novel' || triedBridge.current) return;
+    triedBridge.current = true;
+    const pref = loadBridgePref();
+    const want = tabNovelId() || (pref.enabled && pref.novelId);
+    if (!want) return;
+    openNovel(pref.url, want).catch(() => {
+      setBridgeNotice(`Couldn't open the novel on the MCP bridge at ${pref.url}, so you're seeing this browser's copy. Start the bridge (npm run kids-mcp) and reconnect in Settings.`);
+    });
+  }, [mode, openNovel, setBridgeNotice]);
+
+  // Autosave to the bridge.
+  useEffect(() => {
+    if (!novelStore || !novelDirty.current) return undefined;
+    const snap = { project, outline, chapters };
+    const { url, novelId } = novelStore;
+    const t = setTimeout(() => {
+      novelDirty.current = false;
+      saveChain.current = saveChain.current.then(async () => {
+        if (!storeRef.current || storeRef.current.novelId !== novelId) return;
+        try {
+          const saved = await novelBridge.save(url, novelId, { ...snap, rev: novelRev.current });
+          novelRev.current = saved.rev;
+        } catch (e) {
+          if (e.status === 409 && e.body) {
+            applyNovel(e.body);
+            setBridgeNotice('This novel was just changed from Claude/ChatGPT (MCP), so I loaded the latest version. Your last few seconds of edits may need redoing.');
+          } else {
+            setBridgeNotice(`Couldn't save to the bridge: ${e.message}`);
+          }
+        }
+      });
+    }, 800);
+    return () => clearTimeout(t);
+  }, [project, outline, chapters, novelStore, applyNovel, setBridgeNotice]);
+
+  // Live updates from MCP tools.
+  useEffect(() => {
+    if (!novelStore) { setBridgeLive(false); return undefined; }
+    const { url, novelId } = novelStore;
+    const es = novelBridge.events(url, async ev => {
+      if (ev.type === 'hello') setBridgeLive(true);
+      if (ev.type !== 'novel' || ev.novelId !== novelId || ev.writer === NOVEL_CLIENT_ID) return;
+      if (ev.rev <= novelRev.current || novelDirty.current) return;
+      try {
+        const fresh = await novelBridge.load(url, novelId);
+        if (storeRef.current?.novelId !== novelId || novelDirty.current) return;
+        applyNovel(fresh);
+        setBridgeNotice(`Updated from ${ev.writer && ev.writer.startsWith('mcp') ? 'Claude/ChatGPT via MCP' : 'another window'}.`);
+      } catch (e) { /* ignore */ }
+    });
+    es.onopen = () => setBridgeLive(true);
+    es.onerror = () => setBridgeLive(false);
+    return () => es.close();
+  }, [novelStore, applyNovel, setBridgeNotice]);
+
+  const sendNovelToBridge = useCallback(async url => {
+    const created = await novelBridge.create(url, { project, outline, chapters });
+    await openNovel(url, created.id);
+    setBridgeNotice('Novel copied to the MCP bridge. Claude/ChatGPT can now see and edit it.');
+  }, [project, outline, chapters, openNovel, setBridgeNotice]);
+
+  const newNovelOnBridge = useCallback(async url => {
+    const created = await novelBridge.create(url, { project: { ...DEFAULT_PROJECT } });
+    await openNovel(url, created.id);
+    setTab(0);
+  }, [openNovel]);
+
+  const copyNovelToBrowser = useCallback(async () => {
+    if (!confirm('Replace the novel saved in this browser with this one? The bridge copy stays as it is.')) return;
+    localStorage.setItem('novel_project', JSON.stringify(project));
+    localStorage.setItem('novel_outline', JSON.stringify(outline));
+    localStorage.setItem('novel_chapters', JSON.stringify(chapters));
+    disconnectNovel();
+    setBridgeNotice('Copied into this browser and disconnected from the bridge.');
+  }, [project, outline, chapters, disconnectNovel, setBridgeNotice]);
   useEffect(() => { localStorage.setItem('novel_provider_keys', JSON.stringify(providerKeys)); }, [providerKeys]);
   useEffect(() => { localStorage.setItem('novel_api_model', activeModel); }, [activeModel]);
   useEffect(() => { localStorage.setItem('novel_api_provider', activeProvider); }, [activeProvider]);
@@ -191,6 +305,14 @@ export default function App() {
       reader.onload = (ev) => {
         try {
           const data = JSON.parse(ev.target.result);
+          if (storeRef.current) {
+            const { url } = storeRef.current;
+            novelBridge.create(url, data)
+              .then(created => openNovel(url, created.id))
+              .then(() => setBridgeNotice('Imported as a new novel on the MCP bridge.'))
+              .catch(err => alert('Import failed: ' + err.message));
+            return;
+          }
           if (data.project) setProject(data.project);
           if (data.outline) setOutline(data.outline);
           if (data.chapters) setChapters(data.chapters);
@@ -201,16 +323,21 @@ export default function App() {
       reader.readAsText(file);
     };
     input.click();
-  }, []);
+  }, [openNovel, setBridgeNotice, setProject, setOutline, setChapters]);
 
   const clearProject = useCallback(() => {
+    if (storeRef.current) {
+      if (!confirm('Start a new empty novel on the MCP bridge? The current one stays saved there.')) return;
+      newNovelOnBridge(storeRef.current.url).catch(err => alert('Could not create a novel: ' + err.message));
+      return;
+    }
     if (!confirm('Clear everything? This will erase all project data, outline, and chapters. (API keys are kept.) Make sure you\'ve exported your project first!')) return;
     setProject({ ...DEFAULT_PROJECT });
     setOutline([]);
     setChapters({});
     setTab(0);
     setLoading({});
-  }, []);
+  }, [newNovelOnBridge, setProject, setOutline, setChapters]);
 
   // ── Unified API call ──────────────────────────────────────────────
   const callAPIStreaming = useCallback(async (messages, systemPrompt = '', overrides = {}, onChunk = null) => {
@@ -335,10 +462,9 @@ export default function App() {
     return callAPIStreaming(messages, systemPrompt);
   }, [callAPIStreaming]);
 
-  // Count configured providers
   const configuredCount = Object.keys(providerKeys).filter(k => providerKeys[k]).length;
-
-  const tabs = ['Setup', 'Outline', 'Chapters', 'Full Book', 'Publish'];
+  const tabs = ['Setup', 'Outline', 'Chapters', 'Full Book', 'Publish', 'Settings'];
+  const SETTINGS_TAB = 5;
 
   const header = (
     <>
@@ -383,68 +509,18 @@ export default function App() {
     <div className="app-container">
       {header}
 
-      {/* PROVIDERS */}
-      <CollapsibleSection
-        title={`API Providers — ${configuredCount > 0 ? `${configuredCount} configured, active: ${PROVIDER_CATALOG[activeProvider]?.name || activeProvider}` : 'none configured'}`}
-      >
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-          {Object.entries(PROVIDER_CATALOG).map(([provId, catalog]) => {
-            const hasKey = !!providerKeys[provId];
-            const isActive = activeProvider === provId;
-            return (
-              <div key={provId} style={{
-                background: isActive ? 'var(--accent-glow)' : 'var(--bg-tertiary)',
-                border: `1px solid ${isActive ? 'var(--accent)' : hasKey ? 'var(--success)' : 'var(--border)'}`,
-                borderRadius: 'var(--radius)',
-                padding: '12px 14px',
-              }}>
-                <div className="flex-row" style={{ justifyContent: 'space-between', marginBottom: 8 }}>
-                  <div className="flex-row">
-                    <strong style={{ fontSize: '0.9rem', color: isActive ? 'var(--accent)' : 'var(--text-primary)' }}>{catalog.name}</strong>
-                    {hasKey && <span style={{ fontSize: '0.72rem', color: 'var(--success)' }}>✓ key set</span>}
-                  </div>
-                  {hasKey && (
-                    <button
-                      className={`btn btn-sm ${isActive ? 'btn-accent' : ''}`}
-                      onClick={() => {
-                        setActiveProvider(provId);
-                        // Pick first model from this provider
-                        setActiveModel(catalog.models[0].id);
-                      }}
-                    >
-                      {isActive ? 'Active' : 'Set Active'}
-                    </button>
-                  )}
-                </div>
-                <div className="flex-row" style={{ gap: 8 }}>
-                  <input
-                    type="text"
-                    value={providerKeys[provId] || ''}
-                    onChange={e => setProviderKeys(prev => ({ ...prev, [provId]: e.target.value }))}
-                    placeholder={catalog.placeholder}
-                    style={{ fontFamily: 'var(--font-mono)', fontSize: '0.82rem', flex: 1 }}
-                  />
-                  {isActive && (
-                    <select
-                      value={activeModel}
-                      onChange={e => setActiveModel(e.target.value)}
-                      style={{ maxWidth: 200 }}
-                    >
-                      {catalog.models.map(m => (
-                        <option key={m.id} value={m.id}>{m.label}</option>
-                      ))}
-                    </select>
-                  )}
-                </div>
-              </div>
-            );
-          })}
-        </div>
-
-      </CollapsibleSection>
-
       {/* PROJECT ACTIONS */}
       <div className="flex-row mb-md" style={{ justifyContent: 'flex-end' }}>
+        <button
+          className={`store-chip ${novelStore ? (bridgeLive ? 'bridge' : 'offline') : ''}`}
+          style={{ marginRight: 'auto' }}
+          onClick={() => setTab(SETTINGS_TAB)}
+          title="Where this novel is saved (Settings)"
+        >
+          {novelStore
+            ? <>● MCP bridge {bridgeLive ? 'live' : 'offline'} · {novelStore.novelId}</>
+            : <>● Saved in this browser{configuredCount === 0 ? ' · no API key yet (Settings)' : ''}</>}
+        </button>
         <button className="btn btn-sm" onClick={exportProject}>Export JSON</button>
         <button className="btn btn-sm" onClick={importProject}>Import JSON</button>
         <button className="btn btn-sm btn-danger" onClick={clearProject}>New Project</button>
@@ -458,6 +534,13 @@ export default function App() {
           </button>
         ))}
       </div>
+
+      {bridgeNotice && (
+        <div className="bridge-notice">
+          <span>{bridgeNotice}</span>
+          <button className="btn btn-sm" onClick={() => setBridgeNotice('')}>×</button>
+        </div>
+      )}
 
       {/* TAB CONTENT */}
       {tab === 0 && (
@@ -520,6 +603,23 @@ export default function App() {
           project={project}
           outline={outline}
           chapters={chapters}
+        />
+      )}
+      {tab === SETTINGS_TAB && (
+        <SettingsTab
+          title={project.title}
+          providers={{ catalog: PROVIDER_CATALOG, providerKeys, setProviderKeys, activeProvider, setActiveProvider, activeModel, setActiveModel }}
+          bridge={{
+            store: novelStore,
+            live: bridgeLive,
+            url: novelStore?.url || loadBridgePref().url,
+            openNovel,
+            disconnect: disconnectNovel,
+            sendToBridge: sendNovelToBridge,
+            copyToBrowser: copyNovelToBrowser,
+            newOnBridge: newNovelOnBridge,
+            setNotice: setBridgeNotice,
+          }}
         />
       )}
     </div>

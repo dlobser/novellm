@@ -7,10 +7,13 @@ import path from 'node:path';
 import os from 'node:os';
 import { newBook, normalizeBook, allImageIds, uid } from '../src/kids/model.js';
 import { DEFAULT_IMAGE_SETTINGS } from '../src/kids/imageProviders.js';
+import { normalizeNovel } from '../src/novelModel.js';
 
 export const DATA_DIR = path.resolve(process.env.KIDSBOOK_DATA_DIR || path.join(os.homedir(), 'AIBookGenerator', 'kids-books'));
 export const BOOKS_DIR = path.join(DATA_DIR, 'books');
+export const NOVELS_DIR = path.join(DATA_DIR, 'novels');
 fs.mkdirSync(BOOKS_DIR, { recursive: true });
+fs.mkdirSync(NOVELS_DIR, { recursive: true });
 
 const EXT = { 'image/png': 'png', 'image/jpeg': 'jpg', 'image/webp': 'webp', 'image/gif': 'gif', 'image/svg+xml': 'svg' };
 const MIME = Object.fromEntries(Object.entries(EXT).map(([m, e]) => [e, m]));
@@ -157,6 +160,75 @@ export async function gcImages(bookId) {
     if (!keep.has(id)) { await fsp.rm(path.join(imagesDir(bookId), f), { force: true }); removed++; }
   }
   return removed;
+}
+
+// ---- novels (adult books): <DATA_DIR>/novels/<novelId>/novel.json = { id, rev, project, outline, chapters } ----
+const novelFile = id => path.join(NOVELS_DIR, safeId(id), 'novel.json');
+
+export async function readNovel(id) {
+  let raw;
+  try { raw = await fsp.readFile(novelFile(id), 'utf8'); } catch (e) {
+    throw Object.assign(new Error(`No novel with id ${id}`), { status: 404 });
+  }
+  return normalizeNovel(JSON.parse(raw));
+}
+
+async function writeNovelUnlocked(novel, { writer, baseRev }) {
+  const id = safeId(novel.id);
+  await fsp.mkdir(path.dirname(novelFile(id)), { recursive: true });
+  let currentRev = 0;
+  try {
+    const current = await readNovel(id);
+    currentRev = current.rev || 0;
+    if (baseRev !== null && baseRev !== undefined && Number(baseRev) < currentRev) throw new ConflictError(current);
+  } catch (e) { if (e instanceof ConflictError) throw e; }
+  const n = normalizeNovel(novel);
+  const saved = { id, rev: currentRev + 1, updatedAt: Date.now(), _writer: writer, project: n.project, outline: n.outline, chapters: n.chapters };
+  await atomicWrite(novelFile(id), JSON.stringify(saved, null, 1));
+  return saved;
+}
+
+export function writeNovel(novel, { writer = 'unknown', baseRev = null } = {}) {
+  return withBookLock(`novel:${safeId(novel.id)}`, () => writeNovelUnlocked(novel, { writer, baseRev }));
+}
+
+export function updateNovel(id, writer, fn) {
+  return withBookLock(`novel:${safeId(id)}`, async () => {
+    for (let attempt = 0; ; attempt++) {
+      const novel = await readNovel(id);
+      const next = await fn(novel);
+      try {
+        return await writeNovelUnlocked({ ...next, id }, { writer, baseRev: novel.rev || 0 });
+      } catch (e) {
+        if (!(e instanceof ConflictError) || attempt >= 4) throw e;
+      }
+    }
+  });
+}
+
+export async function createNovel(data = {}, writer = 'unknown') {
+  const { project, outline, chapters } = data || {};
+  return writeNovel({ id: uid('novel'), project, outline, chapters }, { writer });
+}
+
+export async function listNovels() {
+  const out = [];
+  for (const d of await fsp.readdir(NOVELS_DIR, { withFileTypes: true })) {
+    if (!d.isDirectory()) continue;
+    try {
+      const n = normalizeNovel(JSON.parse(await fsp.readFile(path.join(NOVELS_DIR, d.name, 'novel.json'), 'utf8')));
+      out.push({
+        id: n.id,
+        title: n.project.title || '',
+        synopsis: (n.project.synopsis || '').slice(0, 140),
+        chapters: n.outline.length,
+        chaptersWritten: n.outline.filter((_, i) => n.chapters[i]?.text).length,
+        updatedAt: n.updatedAt,
+        rev: n.rev,
+      });
+    } catch (e) { /* skip broken */ }
+  }
+  return out.sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
 }
 
 // ---- settings (image generator config for MCP-side generation) ----
