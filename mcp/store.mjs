@@ -1,6 +1,6 @@
 // File-based storage shared by the MCP tools and the HTTP bridge.
 // Layout:  <DATA_DIR>/books/<bookId>/book.json  +  images/<imageId>.<ext>
-//          <DATA_DIR>/settings.json   <DATA_DIR>/active.json
+//          <DATA_DIR>/settings.json   <DATA_DIR>/active.json (last book opened on the website; display only)
 import fs from 'node:fs';
 import fsp from 'node:fs/promises';
 import path from 'node:path';
@@ -51,8 +51,19 @@ export async function readBook(id) {
   return normalizeBook(JSON.parse(raw));
 }
 
-// baseRev: if given and older than what's on disk -> ConflictError.
-export async function writeBook(book, { writer = 'unknown', baseRev = null } = {}) {
+// One write at a time per book inside this process, so parallel chats / image jobs
+// on the same book can't overwrite each other's changes.
+const locks = new Map();
+export function withBookLock(id, fn) {
+  const prev = locks.get(id) || Promise.resolve();
+  const run = prev.catch(() => {}).then(fn);
+  const tail = run.catch(() => {});
+  locks.set(id, tail);
+  tail.then(() => { if (locks.get(id) === tail) locks.delete(id); });
+  return run;
+}
+
+async function writeUnlocked(book, { writer, baseRev }) {
   const id = safeId(book.id);
   await fsp.mkdir(imagesDir(id), { recursive: true });
   let currentRev = 0;
@@ -66,12 +77,32 @@ export async function writeBook(book, { writer = 'unknown', baseRev = null } = {
   return saved;
 }
 
+// baseRev: if given and older than what's on disk -> ConflictError.
+export function writeBook(book, { writer = 'unknown', baseRev = null } = {}) {
+  return withBookLock(safeId(book.id), () => writeUnlocked(book, { writer, baseRev }));
+}
+
+// Read the latest copy of one book, change it, save it. Always targets the given id.
+// Retries if another process (e.g. a second MCP server) saved in between.
+export function updateBook(id, writer, fn) {
+  return withBookLock(safeId(id), async () => {
+    for (let attempt = 0; ; attempt++) {
+      const book = await readBook(id);
+      const next = await fn(book);
+      try {
+        return await writeUnlocked({ ...next, id }, { writer, baseRev: book.rev || 0 });
+      } catch (e) {
+        if (!(e instanceof ConflictError) || attempt >= 4) throw e;
+      }
+    }
+  });
+}
+
+// Creating a book never changes which book anyone else is looking at.
 export async function createBook(partial = {}, writer = 'unknown') {
   const { id: _ignored, rev: _r, ...rest } = partial || {};
   const book = newBook(rest);
-  const saved = await writeBook({ ...book, id: uid('book') }, { writer });
-  await setActive(saved.id);
-  return saved;
+  return writeBook({ ...book, id: uid('book') }, { writer });
 }
 
 export async function listBooks() {
@@ -81,7 +112,7 @@ export async function listBooks() {
     if (!d.isDirectory()) continue;
     try {
       const b = JSON.parse(await fsp.readFile(path.join(BOOKS_DIR, d.name, 'book.json'), 'utf8'));
-      out.push({ id: b.id, title: b.title || '', pageCount: b.pageCount, updatedAt: b.updatedAt, rev: b.rev, active: b.id === active });
+      out.push({ id: b.id, title: b.title || '', premise: (b.premise || '').slice(0, 140), pageCount: b.pageCount, updatedAt: b.updatedAt, rev: b.rev, openOnWebsite: b.id === active });
     } catch (e) { /* skip broken */ }
   }
   return out.sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
@@ -152,15 +183,17 @@ export async function writeSettings(patch) {
   return next;
 }
 
-// Effective image settings: settings.json, then environment variables.
-export async function imageSettings() {
+// Effective image settings: the book's own choices (provider/model, never keys),
+// then settings.json, then environment variables.
+export async function imageSettings(book = null) {
   const s = (await readSettings()).image || {};
+  const o = (book && book.imageOverride) || {};
   const d = DEFAULT_IMAGE_SETTINGS;
   return {
-    provider: process.env.KIDSBOOK_IMAGE_PROVIDER || s.provider || (process.env.COMFY_URL ? 'comfy' : d.provider),
-    gemini: { ...d.gemini, ...(s.gemini || {}), key: s.gemini?.key || process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY || '' },
-    openai: { ...d.openai, ...(s.openai || {}), key: s.openai?.key || process.env.OPENAI_API_KEY || '' },
-    comfy: { ...d.comfy, ...(s.comfy || {}), url: s.comfy?.url || process.env.COMFY_URL || d.comfy.url },
+    provider: o.provider || process.env.KIDSBOOK_IMAGE_PROVIDER || s.provider || (process.env.COMFY_URL ? 'comfy' : d.provider),
+    gemini: { ...d.gemini, ...(s.gemini || {}), ...(o.gemini || {}), key: s.gemini?.key || process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY || '' },
+    openai: { ...d.openai, ...(s.openai || {}), ...(o.openai || {}), key: s.openai?.key || process.env.OPENAI_API_KEY || '' },
+    comfy: { ...d.comfy, ...(s.comfy || {}), ...(o.comfy || {}), url: o.comfy?.url || s.comfy?.url || process.env.COMFY_URL || d.comfy.url },
   };
 }
 

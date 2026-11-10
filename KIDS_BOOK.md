@@ -23,7 +23,7 @@ A **Kids Book** tab on theaibookgenerator.com for making illustrated children's 
 
 ## MCP: work from Claude Desktop or ChatGPT instead of paying for API tokens
 
-`mcp/server.mjs` is an MCP server with 25 tools: create/open books, cast, `get_writing_brief` → `write_story`, page edits, sheet/page/cover generation, `view_image`, design, back cover, matter pages, print plan, and print-file export. The writing is done by your chat app. Images still use the configured generator, and ComfyUI keeps that free.
+`mcp/server.mjs` is an MCP server with 24 tools: list/create books, cast, `get_writing_brief` → `write_story`, page edits, sheet/page/cover generation, `view_image`, design, back cover, matter pages, print plan, and print-file export. The writing is done by your chat app. Images still use the configured generator, and ComfyUI keeps that free.
 
 ```bash
 npm install
@@ -64,6 +64,16 @@ Then in ChatGPT → Settings → Connectors → Advanced → Developer mode, add
 Image keys for MCP-side generation come either from the website (Settings → *Send image-generator settings*, with keys optional) or from the env vars `GEMINI_API_KEY`, `OPENAI_API_KEY`, `COMFY_URL` and `KIDSBOOK_IMAGE_PROVIDER`.
 
 Other env vars: `KIDSBOOK_DATA_DIR`, `KIDSBOOK_PORT`, and `KIDSBOOK_ALLOWED_ORIGINS` (comma-separated; theaibookgenerator.com and localhost are always allowed).
+
+### Several books at once (one chat per book)
+
+There is no "current book" on the server. Every book tool needs a `bookId`, so any number of Claude/ChatGPT chats can share one connector, each working on its own book.
+
+1. Create the books first, either on the website (New book while connected to the bridge) or in any chat with `create_book`. Creating a book switches nothing anywhere else.
+2. Go to Kids Book → Settings → MCP bridge. Each book shows its **Book ID** and has a **Copy chat prompt** button. Paste that prompt into a new chat. It tells the chat which ID to use and not to touch other books.
+3. Click **New tab** to watch each book in its own browser tab (`?kidsbook=<id>`). Each tab keeps its own book, and opening a book in one tab doesn't change the others.
+
+Image generation is safe in parallel. Each job is tied to the book and page it was started for, and edits to the same book are queued so none get lost. `set_image_settings` with a `bookId` changes the generator for that book only. Without one, it changes the default for every book.
 
 Useful URLs while the bridge runs: `http://127.0.0.1:7801/preview/<bookId>` shows the spreads, and `http://127.0.0.1:7801/print/<bookId>` gives print-ready sheets.
 

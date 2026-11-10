@@ -26,7 +26,7 @@ import { generateImage, IMAGE_PROVIDERS } from '../src/kids/imageProviders.js';
 import { renderBookHTML, printInstructions } from '../src/kids/layout.js';
 import { KID_FONTS } from '../src/kids/fonts.js';
 import {
-  DATA_DIR, BOOKS_DIR, ConflictError, readBook, writeBook, createBook, listBooks, getActive, setActive,
+  DATA_DIR, BOOKS_DIR, ConflictError, readBook, writeBook, updateBook, createBook, listBooks, setActive,
   saveImage, readImage, imagePath, gcImages, readSettings, writeSettings, imageSettings, redactSettings,
 } from './store.mjs';
 
@@ -47,30 +47,29 @@ const log = (...a) => console.error('[kids-book]', ...a); // stdout belongs to t
 // ===================================================================== MCP tools
 
 const INSTRUCTIONS = `Kids Book Studio (theaibookgenerator.com) — make illustrated children's books that print as a folded booklet on letter paper.
+Several chats can work on different books at the same time. Every book tool needs an explicit bookId; there is no "current book".
+If the user gave you a book ID, use only that one. Never edit a book you weren't asked to work on.
 Typical flow:
-1. list_books, then open_book or create_book (choose pageCount: a multiple of 4; 16 or 24 are typical).
+1. list_books to find the user's book, or create_book (choose pageCount: a multiple of 4; 16 or 24 are typical). Note the bookId it returns and pass it to every call.
 2. Cast: upsert_cast_member for each character / prop / environment with a precise visual description. If the user has pictures on disk, add_reference_image.
-3. generate_cast_sheet for each cast member (model sheets keep characters consistent). Image generation uses the user's configured generator (ComfyUI is free/local; Gemini/OpenAI cost money) — check get_image_settings and confirm before generating lots of images.
+3. generate_cast_sheet for each cast member (model sheets keep characters consistent). Image generation uses the configured generator (ComfyUI is free/local; Gemini/OpenAI cost money) — check get_image_settings and confirm before generating lots of images.
 4. get_writing_brief, then YOU write the story and save it with write_story using exactly the number of story pages the brief gives.
 5. generate_cover and generate_page_illustration (one page per call, or generate_missing_illustrations in small batches). Use view_image to check results.
 6. set_design (fonts, colors), set_back_cover (blurb), set_matter_pages (title page, dedication, about the author...).
-7. get_print_plan and export_print_file. The user can watch and edit everything live on theaibookgenerator.com → Kids Book tab (Settings → MCP bridge).`;
+7. get_print_plan and export_print_file. The user can watch and edit live on theaibookgenerator.com → Kids Book tab (Settings → MCP bridge → Open).`;
 
 const ok = obj => ({ content: [{ type: 'text', text: typeof obj === 'string' ? obj : JSON.stringify(obj, null, 2) }] });
 const fail = msg => ({ content: [{ type: 'text', text: `Error: ${msg}` }], isError: true });
 const wrap = fn => async a => { try { return await fn(a || {}); } catch (e) { log(e.message || e); return fail(e.message || String(e)); } };
 
+// Book tools never fall back to "whatever book is open": several chats may be working at once.
 async function resolveBookId(bookId) {
-  const id = bookId || await getActive();
-  if (!id) throw new Error('No book is open. Use list_books, then open_book or create_book.');
-  return id;
+  if (!bookId) throw new Error('bookId is required. Use list_books (or create_book) to get the id of the book you were asked to work on, and pass it on every call.');
+  return bookId;
 }
 
 async function mutate(bookId, writer, fn) {
-  const id = await resolveBookId(bookId);
-  const book = await readBook(id);
-  const next = await fn(book);
-  return writeBook(next, { writer });
+  return updateBook(await resolveBookId(bookId), writer, fn);
 }
 
 async function thumb(buffer, mime, max = 768) {
@@ -86,7 +85,7 @@ async function thumb(buffer, mime, max = 768) {
 }
 
 async function generateFor(book, { prompt, refs = [], aspect = '1:1' }) {
-  const settings = await imageSettings();
+  const settings = await imageSettings(book);
   const refImgs = [];
   for (const r of refs) {
     try {
@@ -160,14 +159,14 @@ function buildServer(transportName) {
   const writer = `mcp-${transportName}`;
   const server = new McpServer({ name: 'kids-book-studio', version: VERSION }, { instructions: INSTRUCTIONS });
   const tool = (name, description, inputSchema, fn, annotations) => server.registerTool(name, { description, inputSchema, annotations }, wrap(fn));
-  const bookIdArg = { bookId: z.string().optional().describe('Defaults to the currently open book') };
+  const bookIdArg = { bookId: z.string().describe('Id of the book to work on (from list_books or create_book). Required — always the same book you were asked to work on.') };
 
-  tool('list_books', 'List kids books stored on this computer and which one is open.', {}, async () => {
+  tool('list_books', 'List kids books stored on this computer with their ids.', {}, async () => {
     const books = await listBooks();
-    return ok({ dataDir: DATA_DIR, books, hint: books.length ? 'open_book to switch, create_book to start a new one.' : 'No books yet — create_book.' });
+    return ok({ dataDir: DATA_DIR, books, hint: books.length ? 'Pass the bookId of the book you are working on to every other tool. create_book starts a new one.' : 'No books yet — create_book.' });
   }, { readOnlyHint: true });
 
-  tool('create_book', 'Create a new kids book and make it the open book.', {
+  tool('create_book', 'Create a new kids book. Returns its bookId — pass that id to every later call. Does not change what anyone else is working on.', {
     title: z.string().optional(),
     premise: z.string().optional().describe('What the story is about'),
     author: z.string().optional(),
@@ -182,16 +181,10 @@ function buildServer(transportName) {
     const partial = Object.fromEntries(Object.entries(a).filter(([, v]) => v !== undefined));
     if (partial.pageCount && !PAGE_COUNTS.includes(partial.pageCount)) partial.pageCount = Math.max(8, Math.ceil(partial.pageCount / 4) * 4);
     const book = await createBook(partial, writer);
-    return ok({ created: bookSummary(book), next: 'Add cast with upsert_cast_member, then get_writing_brief → write_story.' });
+    return ok({ bookId: book.id, created: bookSummary(book), next: `Use bookId "${book.id}" on every call. Add cast with upsert_cast_member, then get_writing_brief → write_story.` });
   });
 
-  tool('open_book', 'Switch the open book.', { bookId: z.string() }, async ({ bookId }) => {
-    const b = await readBook(bookId);
-    await setActive(b.id);
-    return ok(bookSummary(b));
-  });
-
-  tool('get_book', 'Get the open book: details, cast, every page (text, illustration notes, layout, image ids), design and warnings.', { ...bookIdArg }, async ({ bookId }) => {
+  tool('get_book', 'Get a book: details, cast, every page (text, illustration notes, layout, image ids), design and warnings.', { ...bookIdArg }, async ({ bookId }) => {
     const b = await readBook(await resolveBookId(bookId));
     return ok(storyOverview(b));
   }, { readOnlyHint: true });
@@ -344,9 +337,13 @@ function buildServer(transportName) {
     return { content: [{ type: 'text', text: `Saved as ${imgId}.` }, await thumb(buffer, mime, 512)] };
   });
 
-  tool('get_image_settings', 'Show which image generator the MCP server will use (keys are hidden).', {}, async () => {
-    const s = await imageSettings();
+  tool('get_image_settings', 'Show which image generator will be used (keys are hidden). With bookId, shows the settings for that book, including its own overrides.', {
+    bookId: z.string().optional(),
+  }, async ({ bookId }) => {
+    const book = bookId ? await readBook(bookId) : null;
+    const s = await imageSettings(book);
     return ok({
+      ...(book ? { bookId: book.id, bookOverride: book.imageOverride || null } : {}),
       provider: s.provider,
       providers: Object.keys(IMAGE_PROVIDERS),
       gemini: { model: s.gemini.model, hasKey: !!s.gemini.key },
@@ -356,19 +353,38 @@ function buildServer(transportName) {
     });
   }, { readOnlyHint: true });
 
-  tool('set_image_settings', 'Choose the image generator (no API keys here — set those on the web page or in env vars).', {
+  tool('set_image_settings', 'Choose the image generator for ONE book (pass bookId; other books are unaffected). Without bookId it changes the default for every book, which affects other chats — only do that if the user asks. No API keys here.', {
+    bookId: z.string().optional().describe('Book to change. Leave out only to change the default for all books.'),
     provider: z.enum(Object.keys(IMAGE_PROVIDERS)).optional(),
     geminiModel: z.string().optional(), openaiModel: z.string().optional(), openaiQuality: z.enum(['low', 'medium', 'high', 'auto']).optional(),
     comfyUrl: z.string().optional(), comfyCheckpoint: z.string().optional(),
-  }, async a => {
-    const patch = { image: {} };
-    if (a.provider) patch.image.provider = a.provider;
-    if (a.geminiModel) patch.image.gemini = { model: a.geminiModel };
-    if (a.openaiModel || a.openaiQuality) patch.image.openai = { ...(a.openaiModel ? { model: a.openaiModel } : {}), ...(a.openaiQuality ? { quality: a.openaiQuality } : {}) };
-    if (a.comfyUrl || a.comfyCheckpoint) patch.image.comfy = { ...(a.comfyUrl ? { url: a.comfyUrl } : {}), ...(a.comfyCheckpoint ? { checkpoint: a.comfyCheckpoint } : {}) };
-    await writeSettings(patch);
+    clearBookOverride: z.boolean().optional().describe('With bookId: go back to the default settings for this book'),
+  }, async ({ bookId, clearBookOverride, ...a }) => {
+    const patch = {};
+    if (a.provider) patch.provider = a.provider;
+    if (a.geminiModel) patch.gemini = { model: a.geminiModel };
+    if (a.openaiModel || a.openaiQuality) patch.openai = { ...(a.openaiModel ? { model: a.openaiModel } : {}), ...(a.openaiQuality ? { quality: a.openaiQuality } : {}) };
+    if (a.comfyUrl || a.comfyCheckpoint) patch.comfy = { ...(a.comfyUrl ? { url: a.comfyUrl } : {}), ...(a.comfyCheckpoint ? { checkpoint: a.comfyCheckpoint } : {}) };
+    if (bookId) {
+      const saved = await mutate(bookId, writer, b => {
+        if (clearBookOverride) return { ...b, imageOverride: null };
+        const o = b.imageOverride || {};
+        return {
+          ...b,
+          imageOverride: {
+            ...o, ...patch,
+            gemini: { ...(o.gemini || {}), ...(patch.gemini || {}) },
+            openai: { ...(o.openai || {}), ...(patch.openai || {}) },
+            comfy: { ...(o.comfy || {}), ...(patch.comfy || {}) },
+          },
+        };
+      });
+      const s = await imageSettings(saved);
+      return ok({ bookId: saved.id, provider: s.provider, bookOverride: saved.imageOverride });
+    }
+    await writeSettings({ image: patch });
     const s = await imageSettings();
-    return ok({ provider: s.provider });
+    return ok({ defaultProvider: s.provider, note: 'Changed the default for all books (books with their own setting keep it).' });
   });
 
   tool('generate_cast_sheet', 'Generate a model/turnaround sheet for a cast member with the configured image generator (uses its reference images). Costs money unless the generator is ComfyUI or placeholder.', {
@@ -412,8 +428,9 @@ function buildServer(transportName) {
     extraDirection: z.string().optional(),
     preview: z.boolean().optional(),
   }, async ({ bookId, scene, extraDirection, preview = true }) => {
-    let b = await readBook(await resolveBookId(bookId));
-    if (scene) b = await writeBook({ ...b, cover: { ...b.cover, prompt: scene } }, { writer });
+    const id = await resolveBookId(bookId);
+    let b = await readBook(id);
+    if (scene) b = await mutate(id, writer, bk => ({ ...bk, cover: { ...bk.cover, prompt: scene } }));
     const aspect = b.cover.layout === 'framed' ? '1:1' : b.cover.layout === 'classic' ? '4:3' : '2:3';
     const g = await generateFor(b, { prompt: coverPrompt(b, extraDirection || ''), refs: coverRefs(b), aspect });
     await mutate(b.id, writer, bk => ({ ...bk, cover: { ...bk.cover, imageId: g.id, altImages: [...(bk.cover.altImages || []), g.id] } }));

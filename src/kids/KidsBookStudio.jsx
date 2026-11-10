@@ -14,6 +14,27 @@ import { exportPicturesZip } from './exporters.js';
 const SETTINGS_KEY = 'kids_settings';
 export const CLIENT_ID = `web_${Math.random().toString(36).slice(2, 10)}`;
 
+// Which bridge book this browser tab shows. Kept per tab (URL ?kidsbook=, then sessionStorage),
+// so opening a book in one tab never switches the book in another. localStorage only supplies
+// the default for a brand-new tab.
+const TAB_BOOK_KEY = 'kids_tab_book';
+function tabBookId() {
+  const q = new URLSearchParams(window.location.search).get('kidsbook');
+  if (q) return q;
+  try { return sessionStorage.getItem(TAB_BOOK_KEY); } catch (e) { return null; }
+}
+function rememberTabBook(bookId) {
+  try {
+    if (bookId) sessionStorage.setItem(TAB_BOOK_KEY, bookId);
+    else sessionStorage.removeItem(TAB_BOOK_KEY);
+  } catch (e) { /* ignore */ }
+  const u = new URL(window.location.href);
+  if (u.searchParams.has('kidsbook') || bookId) {
+    if (bookId) u.searchParams.set('kidsbook', bookId); else u.searchParams.delete('kidsbook');
+    window.history.replaceState(null, '', u);
+  }
+}
+
 export const DEFAULT_SETTINGS = {
   text: { provider: 'anthropic', model: 'claude-sonnet-5-5' },
   keys: { anthropic: '', openai: '', gemini: '' },
@@ -116,6 +137,7 @@ export default function KidsBookStudio({ mainKeys }) {
     setStore(st);
     setBookRaw(b);
     setSettings(s => ({ ...s, bridge: { ...s.bridge, enabled: false } }));
+    rememberTabBook(null);
   }, []);
 
   const openBridgeBook = useCallback(async (url, bookId) => {
@@ -127,6 +149,7 @@ export default function KidsBookStudio({ mainKeys }) {
     setStore(st);
     setBookRaw(b);
     setSettings(s => ({ ...s, bridge: { ...s.bridge, url, enabled: true, bookId } }));
+    rememberTabBook(bookId);
     bridgeApi.setActive(url, bookId).catch(() => {});
     return b;
   }, []);
@@ -134,9 +157,10 @@ export default function KidsBookStudio({ mainKeys }) {
   useEffect(() => {
     (async () => {
       const s = loadSettings();
-      if (s.bridge.enabled && s.bridge.bookId) {
+      const want = tabBookId() || (s.bridge.enabled && s.bridge.bookId);
+      if (want) {
         try {
-          await openBridgeBook(s.bridge.url, s.bridge.bookId);
+          await openBridgeBook(s.bridge.url, want);
           return;
         } catch (e) {
           notify(`Couldn't reach the MCP bridge at ${s.bridge.url}, so I'm using this browser's copy instead. Start it with "npm run kids-mcp" and reconnect in Settings.`, 'error');

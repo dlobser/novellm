@@ -131,6 +131,17 @@ function loadProviderKeys() {
 }
 
 export default function App() {
+  // Two separate modes: a novel (adult book) or a kids' picture book.
+  // ?kidsbook=<id> opens a bridge book straight in kids mode (one browser tab per book).
+  const [mode, setModeRaw] = useState(() => (new URLSearchParams(window.location.search).has('kidsbook') ? 'kids' : (localStorage.getItem('book_mode') === 'kids' ? 'kids' : 'novel')));
+  const setMode = m => {
+    setModeRaw(m);
+    localStorage.setItem('book_mode', m);
+    if (m === 'novel') {
+      const u = new URL(window.location.href);
+      if (u.searchParams.has('kidsbook')) { u.searchParams.delete('kidsbook'); window.history.replaceState(null, '', u); }
+    }
+  };
   const [tab, setTab] = useState(0);
   const [activeProvider, setActiveProvider] = useState(() => localStorage.getItem('novel_api_provider') || 'anthropic');
   const [activeModel, setActiveModel] = useState(() => localStorage.getItem('novel_api_model') || 'claude-sonnet-4-20250514');
@@ -327,20 +338,50 @@ export default function App() {
   // Count configured providers
   const configuredCount = Object.keys(providerKeys).filter(k => providerKeys[k]).length;
 
-  const tabs = ['Setup', 'Outline', 'Chapters', 'Full Book', 'Publish', 'Kids Book'];
+  const tabs = ['Setup', 'Outline', 'Chapters', 'Full Book', 'Publish'];
 
-  return (
-    <div className="app-container">
+  const header = (
+    <>
       <header className="app-header">
         <button className="theme-toggle" onClick={() => setTheme(t => t === 'dark' ? 'light' : 'dark')} title="Toggle light/dark mode">
           {theme === 'dark' ? '☀️' : '🌙'}
         </button>
         <h1>The AI Book Generator</h1>
-        <div className="subtitle">AI-Assisted Long-Form Text Writing</div>
+        <div className="subtitle">{mode === 'kids' ? "Illustrated Kids' Picture Books" : 'AI-Assisted Long-Form Text Writing'}</div>
         <div className="instructions">
-          This tool is free to use — just provide your API key (Claude or OpenAI or both). Your key will not be transmitted or shared; it stays local on your machine. Keep it safe and don't share it! One book will cost around a dollar in tokens.
+          {mode === 'kids'
+            ? "Write, illustrate and print a children's picture book as a folded booklet. Use your own API keys (Settings tab), free local ComfyUI, or Claude/ChatGPT through the MCP bridge. Keys stay on your machine."
+            : "This tool is free to use — just provide your API key (Claude or OpenAI or both). Your key will not be transmitted or shared; it stays local on your machine. Keep it safe and don't share it! One book will cost around a dollar in tokens."}
         </div>
       </header>
+
+      <div className="mode-switch" role="tablist" aria-label="What are you making?">
+        <button role="tab" aria-selected={mode === 'novel'} className={`mode-btn ${mode === 'novel' ? 'active' : ''}`} onClick={() => setMode('novel')}>
+          <strong>Novel</strong>
+          <span>A long-form book, written chapter by chapter</span>
+        </button>
+        <button role="tab" aria-selected={mode === 'kids'} className={`mode-btn ${mode === 'kids' ? 'active' : ''}`} onClick={() => setMode('kids')}>
+          <strong>Kids' picture book</strong>
+          <span>An illustrated story that prints as a booklet</span>
+        </button>
+      </div>
+    </>
+  );
+
+  if (mode === 'kids') {
+    return (
+      <div className="app-container">
+        {header}
+        <Suspense fallback={<div className="text-muted">Loading Kids Book Studio…</div>}>
+          <KidsBookStudio mainKeys={providerKeys} />
+        </Suspense>
+      </div>
+    );
+  }
+
+  return (
+    <div className="app-container">
+      {header}
 
       {/* PROVIDERS */}
       <CollapsibleSection
@@ -480,11 +521,6 @@ export default function App() {
           outline={outline}
           chapters={chapters}
         />
-      )}
-      {tab === 5 && (
-        <Suspense fallback={<div className="text-muted">Loading Kids Book Studio…</div>}>
-          <KidsBookStudio mainKeys={providerKeys} />
-        </Suspense>
       )}
     </div>
   );

@@ -5,6 +5,25 @@ import { bridgeApi } from './storage.js';
 import { listModels } from './apiFetch.js';
 import { Field, Spinner, Check, Img, Lightbox } from './ui.jsx';
 
+// A link that opens one bridge book in its own browser tab.
+function bookTabUrl(bookId) {
+  const u = new URL(window.location.href);
+  u.searchParams.set('kidsbook', bookId);
+  return u.toString();
+}
+
+// What to paste into a new Claude/ChatGPT chat so it only ever touches this book.
+export function chatPromptFor(book) {
+  return `You're working on my kids book "${book.title || 'Untitled'}" with the kids-book tools.\n`
+    + `Book ID: ${book.id}\n`
+    + `Pass bookId "${book.id}" on every tool call. Don't touch any other book, don't call create_book, `
+    + `and don't change image settings without a bookId.`;
+}
+
+async function copyText(text, notify) {
+  try { await navigator.clipboard.writeText(text); notify('Copied.'); } catch (e) { window.prompt('Copy this:', text); }
+}
+
 // Sensible pick when the saved model isn't offered to this key.
 function pickDefault(provider, kind, list) {
   if (!list.length) return null;
@@ -254,7 +273,8 @@ export default function SettingsPanel({ settings, setSettings, keys, imageSettin
 
         {store.kind === 'bridge' ? (
           <div className="flex-row mt-md">
-            <span>Editing <b>{book.title || 'Untitled'}</b> on the bridge.</span>
+            <span>Editing <b>{book.title || 'Untitled'}</b> on the bridge · ID <code>{book.id}</code></span>
+            <button className="btn btn-sm" onClick={() => copyText(chatPromptFor(book), notify)} title="Paste this into a new Claude/ChatGPT chat so it works only on this book">Copy chat prompt</button>
             <button className="btn btn-sm" onClick={() => run('pull', pullToBrowser)}>{busy.pull ? 'Copying…' : 'Copy into this browser'}</button>
             <button className="btn btn-sm" onClick={openLocal}>Disconnect (use browser copy)</button>
           </div>
@@ -269,17 +289,22 @@ export default function SettingsPanel({ settings, setSettings, keys, imageSettin
 
         {books.length > 0 && (
           <table className="kb-table mt-md">
-            <thead><tr><th>Books on the bridge</th><th>Pages</th><th>Updated</th><th /></tr></thead>
+            <thead><tr><th>Books on the bridge</th><th>Book ID</th><th>Pages</th><th>Updated</th><th /></tr></thead>
             <tbody>
               {books.map(b => (
                 <tr key={b.id} className={store.kind === 'bridge' && store.bookId === b.id ? 'active' : ''}>
-                  <td>{b.title || 'Untitled'}{b.active ? <span className="kb-chip on" style={{ marginLeft: 6 }}>active in MCP</span> : null}</td>
+                  <td>{b.title || 'Untitled'}</td>
+                  <td><code style={{ fontSize: '0.75rem' }}>{b.id}</code></td>
                   <td>{b.pageCount}</td>
                   <td>{b.updatedAt ? new Date(b.updatedAt).toLocaleString() : ''}</td>
                   <td>
-                    {store.kind === 'bridge' && store.bookId === b.id ? 'open' : (
-                      <button className="btn btn-sm" onClick={() => run('openBridge', () => openBridgeBook(bridgeUrl, b.id))}>Open</button>
-                    )}
+                    <div className="flex-row" style={{ flexWrap: 'nowrap', gap: 4 }}>
+                      {store.kind === 'bridge' && store.bookId === b.id ? <span>open here</span> : (
+                        <button className="btn btn-sm" onClick={() => run('openBridge', () => openBridgeBook(bridgeUrl, b.id))}>Open</button>
+                      )}
+                      <a className="btn btn-sm" href={bookTabUrl(b.id)} target="_blank" rel="noreferrer" title="Watch this book in its own browser tab">New tab</a>
+                      <button className="btn btn-sm" onClick={() => copyText(chatPromptFor(b), notify)} title="Paste into a new Claude/ChatGPT chat so it works only on this book">Copy chat prompt</button>
+                    </div>
                   </td>
                 </tr>
               ))}

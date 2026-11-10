@@ -187,7 +187,7 @@ function fillPlaceholders(node, vars) {
 async function comfyUpload(base, ref, i) {
   const ext = (ref.mimeType.split('/')[1] || 'png').replace('jpeg', 'jpg').replace('svg+xml', 'svg');
   const fd = new FormData();
-  fd.append('image', new Blob([b64ToBytes(ref.data)], { type: ref.mimeType }), `kidsbook_ref_${Date.now()}_${i}.${ext}`);
+  fd.append('image', new Blob([b64ToBytes(ref.data)], { type: ref.mimeType }), `kidsbook_ref_${Date.now()}_${Math.random().toString(36).slice(2, 8)}_${i}.${ext}`);
   fd.append('overwrite', 'true');
   const res = await fetch(`${base}/upload/image`, { method: 'POST', body: fd });
   if (!res.ok) throw new Error(`ComfyUI upload ${await readError(res)}`);
