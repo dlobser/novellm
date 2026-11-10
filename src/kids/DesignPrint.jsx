@@ -337,6 +337,7 @@ export function DesignPanel({ book, update, store, ai, run, busy, plan }) {
               <ColorField label="Background" value={book.cover.bgColor} onChange={v => setCover({ bgColor: v })} />
             </div>
             <Check checked={!book.cover.titleStroke} onChange={v => setCover({ titleStroke: v ? '' : '#2b2b4a' })}>No title outline</Check>
+            <Check checked={!!book.cover.titleShadow} onChange={v => setCover({ titleShadow: v })}>Drop shadow under the title</Check>
             <div className="kb-card kb-subcard">
               <strong>Title text</strong>
               <div className="kb-row">

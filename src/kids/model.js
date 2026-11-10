@@ -128,7 +128,7 @@ export function newBook(overrides = {}) {
       newMatter('copyright', { text: `Text © ${year} [Author]\nIllustrations © ${year}\nAll rights reserved.\n\nFor [someone special]` }),
     ],
     backMatter: [newMatter('about-author', { text: '' })],
-    cover: { layout: 'full-title-top', imageId: null, altImages: [], prompt: '', bgColor: '#fff4dc', titleColor: '#ffffff', titleStroke: '#2b2b4a', titleSize: 46, titleY: null, titleWidth: 100, titleAlign: 'center', titleLineHeight: 1.02, titleStrokeWidth: 0.045, subtitleSize: null, bylineSize: 15, bylinePos: 'bottom' },
+    cover: { layout: 'full-title-top', imageId: null, altImages: [], prompt: '', bgColor: '#fff4dc', titleColor: '#ffffff', titleStroke: '#2b2b4a', titleSize: 46, titleY: null, titleWidth: 100, titleAlign: 'center', titleLineHeight: 1.02, titleStrokeWidth: 0.045, titleShadow: false, subtitleSize: null, bylineSize: 15, bylinePos: 'bottom' },
     backCover: { layout: 'blurb-center', blurb: '', tagline: '', imageId: null, bgColor: '#fff4dc', showAge: true, showBarcodeBox: false },
     design: {
       titleFont: 'Fredoka',
@@ -190,7 +190,7 @@ export function normalizeBook(b) {
   }));
   book.frontMatter = (book.frontMatter || []).map(m => newMatter(m.type || 'note', m));
   book.backMatter = (book.backMatter || []).map(m => newMatter(m.type || 'note', m));
-  book.cover = { layout: 'full-title-top', imageId: null, altImages: [], prompt: '', bgColor: '#fff4dc', titleColor: '#ffffff', titleStroke: '#2b2b4a', titleSize: 46, titleY: null, titleWidth: 100, titleAlign: 'center', titleLineHeight: 1.02, titleStrokeWidth: 0.045, subtitleSize: null, bylineSize: 15, bylinePos: 'bottom', ...(base.cover || {}) };
+  book.cover = { layout: 'full-title-top', imageId: null, altImages: [], prompt: '', bgColor: '#fff4dc', titleColor: '#ffffff', titleStroke: '#2b2b4a', titleSize: 46, titleY: null, titleWidth: 100, titleAlign: 'center', titleLineHeight: 1.02, titleStrokeWidth: 0.045, titleShadow: false, subtitleSize: null, bylineSize: 15, bylinePos: 'bottom', ...(base.cover || {}) };
   book.backCover = { layout: 'blurb-center', blurb: '', tagline: '', imageId: null, bgColor: '#fff4dc', showAge: true, showBarcodeBox: false, ...(base.backCover || {}) };
   book.design = {
     titleFont: 'Fredoka', bodyFont: 'Andika', bodySize: 17, lineHeight: 1.45, align: 'center',

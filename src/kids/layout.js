@@ -23,8 +23,11 @@ function hexToRgba(hex, a) {
 function outline(color, w = 0.045) {
   w = Math.max(0, Math.min(0.2, Number(w) || 0));
   const d = [[0, 1], [1, 0], [0, -1], [-1, 0], [0.7, 0.7], [-0.7, 0.7], [0.7, -0.7], [-0.7, -0.7]];
-  return d.map(([x, y]) => `${(x * w).toFixed(3)}em ${(y * w).toFixed(3)}em 0 ${color}`).join(', ') + `, 0 ${w * 2}em ${w * 3}em rgba(0,0,0,.35)`;
+  return d.map(([x, y]) => `${(x * w).toFixed(3)}em ${(y * w).toFixed(3)}em 0 ${color}`).join(', ');
 }
+
+// Optional soft drop shadow under the cover title (cover.titleShadow; off unless turned on).
+const TITLE_DROP_SHADOW = '0 0.06em 0.1em rgba(0,0,0,.35)';
 
 // Default vertical centre (% of page height) of the cover title for each cover layout.
 export const COVER_TITLE_DEFAULT_Y = { 'full-title-top': 20, 'full-title-bottom': 80, framed: 14, classic: 17 };
@@ -121,7 +124,8 @@ export function renderBookHTML(book, opts = {}) {
     const L = c.layout || 'full-title-top';
     const t = coverTitleBox(c);
     const strokeW = Number(c.titleStrokeWidth ?? 0.045);
-    const titleStyle = `color:${esc(c.titleColor)};${c.titleStroke && strokeW > 0 ? `text-shadow:${outline(c.titleStroke, strokeW)};` : ''}`;
+    const shadows = [c.titleStroke && strokeW > 0 ? outline(c.titleStroke, strokeW) : '', c.titleShadow ? TITLE_DROP_SHADOW : ''].filter(Boolean);
+    const titleStyle = `color:${esc(c.titleColor)};${shadows.length ? `text-shadow:${shadows.join(', ')};` : ''}`;
     const byline = [book.author ? `by ${esc(book.author)}` : '', book.illustrator && book.illustrator !== book.author ? `illustrated by ${esc(book.illustrator)}` : ''].filter(Boolean).join('<br>');
     const by = byline ? `<div class="by" style="${titleStyle}font-size:${Number(c.bylineSize) || 15}pt;">${byline}</div>` : '';
     const subStyle = c.subtitleSize ? `font-size:${Number(c.subtitleSize)}pt;` : '';

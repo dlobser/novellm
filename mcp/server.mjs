@@ -170,6 +170,24 @@ function buildServer(transportName) {
   const tool = (name, description, inputSchema, fn, annotations) => server.registerTool(name, { description, inputSchema, annotations }, wrap(fn));
   const bookIdArg = { bookId: z.string().describe('Id of the book to work on (from list_books or create_book). Required — always the same book you were asked to work on.') };
 
+  tool('import_book_image', 'Import an already generated local illustration into one specific book.', {
+    ...bookIdArg, path: z.string(), target: z.enum(['cast', 'cover', 'page']),
+    castName: z.string().optional(), storyPage: z.number().int().min(1).optional(),
+  }, async ({bookId, path: file, target, castName, storyPage}) => {
+    const b = await readBook(bookId);
+    if (target === 'cast' && !findCast(b, castName)) throw new Error('Unknown cast member');
+    if (target === 'page') storyPageAt(b, storyPage);
+    const buffer = await fsp.readFile(file);
+    const id = await saveImage(bookId, buffer, 'image/png');
+    await mutate(bookId, writer, bk => {
+      if (target === 'cast') return {...bk, cast: bk.cast.map(m => m.name === castName ? {...m, sheets: [...m.sheets, id], activeSheet: id} : m)};
+      if (target === 'cover') return {...bk, cover: {...bk.cover, imageId: id, altImages: [...bk.cover.altImages, id]}};
+      const p = storyPageAt(bk, storyPage);
+      return mapPage(bk, p.page.id, pg => ({...pg, imageId: id, altImages: [...(pg.altImages || []), id]}));
+    });
+    return ok({bookId, target, imageId: id});
+  });
+
   tool('list_books', 'List kids books stored on this computer with their ids.', {}, async () => {
     const books = await listBooks();
     return ok({ dataDir: DATA_DIR, books, hint: books.length ? 'Pass the bookId of the book you are working on to every other tool. create_book starts a new one.' : 'No books yet — create_book.' });
@@ -520,11 +538,12 @@ function buildServer(transportName) {
     coverTitleAlign: z.enum(['left', 'center', 'right']).optional(),
     coverTitleLineHeight: z.number().min(0.7).max(2).optional(),
     coverTitleOutlineWidth: z.number().min(0).max(0.2).optional().describe('em; 0 = no outline'),
+    coverTitleShadow: z.boolean().optional().describe('Soft drop shadow under the cover title (off by default)'),
     coverSubtitleSize: z.number().min(6).max(80).optional().describe('pt'),
     coverBylineSize: z.number().min(6).max(48).optional().describe('pt'),
     coverBylinePosition: z.enum(['bottom', 'under-title', 'top']).optional(),
   }, async ({ bookId, coverLayout, coverTitleColor, coverTitleOutline, coverBgColor, backCoverLayout, backCoverBgColor,
-    coverTitleSize, coverTitleY, coverTitleWidth, coverTitleAlign, coverTitleLineHeight, coverTitleOutlineWidth, coverSubtitleSize, coverBylineSize, coverBylinePosition, ...design }) => {
+    coverTitleSize, coverTitleY, coverTitleWidth, coverTitleAlign, coverTitleLineHeight, coverTitleOutlineWidth, coverTitleShadow, coverSubtitleSize, coverBylineSize, coverBylinePosition, ...design }) => {
     const known = new Set(KID_FONTS.map(f => f.name));
     for (const f of [design.titleFont, design.bodyFont]) if (f && !known.has(f)) throw new Error(`Unknown font ${f}. Choose from: ${[...known].join(', ')}`);
     const saved = await mutate(bookId, writer, b => {
@@ -535,7 +554,7 @@ function buildServer(transportName) {
       if (coverTitleOutline !== undefined) cover.titleStroke = coverTitleOutline;
       if (coverBgColor) cover.bgColor = coverBgColor;
       const ct = { titleSize: coverTitleSize, titleY: coverTitleY, titleWidth: coverTitleWidth, titleAlign: coverTitleAlign, titleLineHeight: coverTitleLineHeight,
-        titleStrokeWidth: coverTitleOutlineWidth, subtitleSize: coverSubtitleSize, bylineSize: coverBylineSize, bylinePos: coverBylinePosition };
+        titleStrokeWidth: coverTitleOutlineWidth, titleShadow: coverTitleShadow, subtitleSize: coverSubtitleSize, bylineSize: coverBylineSize, bylinePos: coverBylinePosition };
       Object.entries(ct).forEach(([k, v]) => { if (v !== undefined) cover[k] = v; });
       const backCover = { ...b.backCover };
       if (backCoverLayout) backCover.layout = backCoverLayout;
